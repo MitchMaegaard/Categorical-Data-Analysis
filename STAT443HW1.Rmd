@@ -1,0 +1,76 @@
+---
+title: "HW1 Submission"
+author: "INSERT NAME HERE"
+date: "INSERT DATE HERE"
+output: html_document
+---
+
+## How to complete the homework.
+
+If you've made it this far, then you've already downloaded the HW for this week.  I suggest that you keep all of the materials, including this .rmd file,  for the week in one folder.  It will help to set the working directory to the folder that contains the HW materials.  You can do this by opening the rmd file in an RStudio editor window and then using the menu commands Session -> Set Working Directory -> To Source File Location.
+
+You'll be adding R code and typing answers in the designated spaces throughout this document.  At the end of the week you'll submit the .rmd file and the "knitted" Word document to the dropbox on D2L.  
+
+
+
+## Problem 1 - Agresti 1.2
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 1 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 2 - Agresti 1.4
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 2 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 3 - Agresti 1.6
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 3 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 4 - Anti-Anxiety Drugs
+A pharmaceutical company is researching a new anti-anxiety drug.  Marketing a new drug is costly, and the company only makes a profit when the drug is effective for more than 80% of patients.  A sample of 60 participants in a drug study showed that 52 responded to the drug. 
+
+a. Find a 95% confidence interval for the population proportion of patients who would respond to the drug.
+b. Do a test at the 5% level to determine if the pharmaceutical company should market the drug.  Include null, alternative, test statistic, p-value, and a practical conclusion in the context of the problem.
+c. Find the test statistics that would be used for both the Wald and Likelihood Ratio Test. (No need to complete other aspects of the test.)
+
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 4 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 5 - For Graduate Students
+In the notes (`02-inference-basics.Rpres`), we mentioned an alternative confidence interval (CI) approach that defines the CI as the set of $\pi_0$ values that would not be rejected when testing. Using the method described, show that with $p=0.04$ and $n=400$, this interval yields $(0.0248, 0.0640)$ (as it did in the notes). *Hint: recognize the quadratic form.*
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 5 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
