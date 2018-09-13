@@ -17,12 +17,12 @@ You'll be adding R code and typing answers in the designated spaces throughout t
 
 ### -|-|-|-|-|-|-|-|-|-|-|- Problem 1 Answer -|-|-|-|-|-|-|-|-|-|-|-
 
-a. Nominal
-b. Ordinal
-c. Ordinal
-d. Nominal
-e. Nominal
-f. Ordinal
+a. Nominal  
+b. Ordinal  
+c. Ordinal  
+d. Nominal  
+e. Nominal  
+f. Ordinal  
 
 ---
 
