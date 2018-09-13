@@ -98,10 +98,32 @@ c(wald.stat, loglik.stat)
 In the notes (`02-inference-basics.Rpres`), we mentioned an alternative confidence interval (CI) approach that defines the CI as the set of $\pi_0$ values that would not be rejected when testing. Using the method described, show that with $p=0.04$ and $n=400$, this interval yields $(0.0248, 0.0640)$ (as it did in the notes). *Hint: recognize the quadratic form.*
 
 ### -|-|-|-|-|-|-|-|-|-|-|- Problem 5 Answer -|-|-|-|-|-|-|-|-|-|-|-
-Replace this text with your answer to this problem.
+
+Original equation: $\frac{p-\pi_0}{\sqrt\frac{\pi_0(1-\pi_0)}{n}} = \pm1.96$  
+Rearrange: $p^2-2p\pi_0+\pi_0^2=(\pm1.96)^2\frac{\pi_0(1-\pi_0)}{n}$  
+Plug numbers: $p^2 - 2p\pi_0+\pi_0^2=\frac{1.96^2}{n}(\pi_0-\pi_0^2)$  
+Rearrange: $p^2-(2p-\frac{1.96^2}{n})\pi_0+(1+\frac{1.96^2}{n})\pi_0^2=0$  
+Use quadratic formula to solve for $\pi_0$:
 
 ```{r}
-#Use this code chunk to include code, if needed.
+p <- 0.04
+n <- 400
+z <- 1.96
+
+quad.form <- function(a, b, c){
+  # input: variables of equation of the form: ax^2+bx=c=0
+  # output: lower and upper case values of x
+  numerator.base <- sqrt(b^2 - (4*a*c))
+  lower <- round((-b - numerator.base) / (2*a), 4)
+  upper <- round((-b + numerator.base) / (2*a), 4)
+  return(c(lower, upper))
+}
+
+a <- 1+(z^2/n)
+b <- -((z^2/n)+(2*p))
+c <- p^2
+
+quad.form(a,b,c)
 ```
 
 ---
