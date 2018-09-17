@@ -1,0 +1,75 @@
+---
+title: "HW2 Submission"
+author: "Mitch Maegaard"
+date: "09/17/18"
+output: html_document
+---
+
+## How to complete the homework.
+
+If you've made it this far, then you've already downloaded the HW for this week.  I suggest that you keep all of the materials, including this .rmd file,  for the week in one folder.  It will help to set the working directory to the folder that contains the HW materials.  You can do this by opening the rmd file in an RStudio editor window and then using the menu commands Session -> Set Working Directory -> To Source File Location.
+
+You'll be adding R code and typing answers in the designated spaces throughout this document.  At the end of the week you'll submit the .rmd file and the "knitted" html document to the dropbox on D2L.  
+
+
+
+## Problem 1 - Agresti 2.6
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 1 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 2 - Agresti 2.12
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 2 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem. 
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 3 - Library Services
+2)	Consider the table below giving the number of students from a random sample that say they are completely satisfied with the services they have received at the school’s library. Find a 95% confidence interval for the difference in the proportions of students who are satisfied for the two groups.  Based on your interval, is the population proportion expected to be higher for either student classification? 
+
+Problem 3 Table |  Satisfied | Not Satisfied 
+---- |  ---- | ---- 
+Undergraduate Student | 173 | 39 
+Graduate Student | 42 | 7 
+  
+
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 3 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+---
+
+## Problem 4 - Sensitivity and Specificity
+Calculate both the sensitivity and specificity for the table below.
+
+Problem 4 Table  |  Has Disease | Doesn't Have Disease
+---- |  ---- | ---- 
+Tested Positive | 88 | 4 
+Tested Negative | 2 | 73 
+  
+  
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 4 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+
+
+---
