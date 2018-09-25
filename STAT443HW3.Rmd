@@ -1,0 +1,204 @@
+---
+title: "HW3 Submission"
+author: "Mitch Maegaard"
+date: "09/24/18"
+output: html_document
+---
+
+## How to complete the homework.
+
+If you've made it this far, then you've already downloaded the HW for this week.  I suggest that you keep all of the materials, including this .rmd file,  for the week in one folder.  It will help to set the working directory to the folder that contains the HW materials.  You can do this by opening the rmd file in an RStudio editor window and then using the menu commands Session -> Set Working Directory -> To Source File Location.
+
+You'll be adding R code and typing answers in the designated spaces throughout this document.  At the end of the week you'll submit the .rmd file and the "knitted" html document to the dropbox on D2L.  
+
+
+
+## Problem 1 - Agresti 2.22 (a and b)
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 1 Answer -|-|-|-|-|-|-|-|-|-|-|-
+a.  
+$H_0$: $\pi_{ij} = \pi_{i+} \pi_{+j}$ for all i,j (independent)
+$H_a$: $\pi_{ij} \neq \pi_{i+} \pi_{+j}$ for some i,j (not independent)
+Test stat: $\chi^2_4 = 84.189$
+p-val: $\approx 0$
+Conclusion: We reject $H_0$ and conclude that the diagnosis of the psychiatric patients is associated to whether their treatment prescribed drugs or not.
+
+b.  
+The standardized residuals are computed below, and indicate a greater discrepancy between $n_{ij}$ and $\mu_{ij}$ than we would expect if the variables were independent. Thus, as is consistent with the p-value, we can also reject $H_0$.
+
+```{r}
+# a.
+pearson.5x2 <- function(n11,n12,n13,n14,n15,n21,n22,n23,n24,n25){
+  data <- matrix(c(n11,n12,n13,n14,n15,n21,n22,n23,n24,n25), nrow = 5)
+  mu <- chisq.test(data)$expected
+  std.res <- chisq.test(data)$stdres
+  X2 <- sum(((data-mu)^2)/mu)
+  df <- (5-1)*(2-1)
+  pval <- 1 - pchisq(X2, df)
+  out <- list(X2, pval, std.res)
+  names(out) <- c('Pearson Test Stat','p-value','Standardized Residuals')
+  return(out)
+}
+
+pearson.5x2(105,12,18,47,0,8,2,19,52,13)
+```
+
+---
+
+## Problem 2 - Agresti 2.30
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 2 Answer -|-|-|-|-|-|-|-|-|-|-|-
+a.
+$H_0 : \theta = 1$
+$H_a : \theta > 1$
+p-value: 0.381
+Conclusion: We fail to reject $H_0$ and conclude that the treatment of cancer is independent of surgery and radiation therapy.
+
+```{r}
+table2.17 <- matrix(c(21,15,2,3), nrow = 2)
+fisher.test(table2.17, alternative = 'greater')
+```
+
+---
+
+## Problem 3 - Rec Center
+A sample of college students was classified according to major category and whether or not the student uses the school’s Recreational Center.  Use a Likelihood Ratio Test to determine whether Rec Center use is independent of major (provide null, alternative, test stat, p-value, and practical conclusion).
+  
+Major | Uses Rec Center | Doesn't Use Rec Center  
+--- | --- | --- 
+Science | 66 | 23 
+Social Science | 44 | 12 
+Business | 36 | 8 
+Art | 21 | 13
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 3 Answer -|-|-|-|-|-|-|-|-|-|-|-
+$H_0$: $\pi_{ij} = \pi_{i+}\pi_{+j}$ for all i,j (independent)
+$H_a$: $\pi_{ij} \neq \pi_{i+}\pi_{+j}$ for at least one i,j (not independent)
+Test-stat: $G^2 \sim \chi^2_3 = 4.488$
+p-value = 0.213
+Conclusion: Fail to reject $H_0$. We don't have significant evidence that a college student's major impacts use of the school's Recreational Center.
+
+```{r}
+lrt.4x2 <- function(n11,n12,n13,n14,n21,n22,n23,n24){
+  # for 4x2 data
+  data <- matrix(c(n11,n12,n13,n14,n21,n22,n23,n24), nrow = 4)
+  mu <- chisq.test(data)$expected
+  G2 <- 2*sum(data*log(data/mu))
+  df <- (4-1)*(2-1)
+  pval <- 1 - pchisq(G2,df)
+  return(c(G2, pval))
+}
+
+lrt.4x2(66,44,36,21,23,12,8,13)
+```
+
+---
+
+## Problem 4 - Age and Flu
+A sample of adults who contracted the flu last winter were classified according to age and whether their illness was mild, moderate, or severe.  Perform the appropriate test to determine if there is a relationship between age and severity of the flu.
+
+Age | Mild | Moderate | Severe  
+--- | --- | --- | ---
+18-26 | 35 | 20 | 3 
+27-39 | 23 | 24 | 12 
+40-54 | 15 | 36 | 17 
+55-65 | 8 | 44 | 23
+66-96 | 10 | 31 | 27
+  
+  
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 4 Answer -|-|-|-|-|-|-|-|-|-|-|-
+$H_0$: $p = 0$
+$H_a$: $p \neq 0$
+Test stat: $M^2 = (n-1)r^2 \sim \chi^2_1 = 4.286$
+p-value: $5.875e^{-11} \approx 0$
+Conclusion: Reject $H_0$. We have very clear evidence of an association between adult age and the severity of flu.
+
+```{r}
+assoctest <- function(n11,n12,n13,n14,n15,n21,n22,n23,n24,n25,n31,n32,n33,n34,n35){
+  r1 <- (18+26)/2
+  r2 <- (27+39)/2
+  r3 <- (40+54)/2
+  r4 <- (55+65)/2
+  r5 <- (66+96)/2
+  
+  count <- c(n11,n12,n13,n14,n15,n21,n22,n23,n24,n25,n31,n32,n33,n34,n35)
+  
+  aa <- rep(c(r1,r2,r3,r4,r5), times = 3)
+  age <- rep(aa, count)
+  
+  ss <- rep(1:3, each = 5)
+  severity <- rep(ss, count)
+  
+  corr <- cor(age, severity)
+  M2 <- (length(age)-1)*corr^2
+  df <- 1
+  pval <- 1 - pchisq(M2, df)
+  
+  return(c(M2, pval))
+}
+
+assoctest(35,23,15,8,10,20,24,36,44,31,3,12,17,23,27)
+```
+
+---
+
+## Problem 5 - Clinics, Care, and Mortality
+The data in the table below give counts on infant death and survivals at birth, based on the clinic (A or B) and the amount of prenatal care the mother received (less or more).
+
+Clinic | Prenatal Care | Infant Died | Infant Survived
+--- | --- | --- | ---
+Clinic A | Less | 3 | 176
+. | More | 4 | 233
+--- | --- | --- | ---
+Clinic B | Less | 17 | 197 
+.  | More | 2 | 23
+
+a. Using the partial tables for Clinic A and Clinic B, find the conditional odds ratios $\widehat{\theta}_{XY(A)}$ and $\widehat{\theta}_{XY(B)}$. What do these values suggest the relationship is between prenatal care and infant loss? 
+b. Find the marginal table and use it to find the marginal odds ratio. What does this value suggest the relationship is between prenatal care and infant loss?
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 5 Answer -|-|-|-|-|-|-|-|-|-|-|-
+a. These values are less than, but fairly close to 1; we could state that, for both Clinic A and Clinic B, the odds of infant death are greater when the mother's prenatal care was less. However, since these values are so close to 1, we could alternatively state that the odds of infant death are independent of the level of prenatal care.  
+
+b. The marginal odds ratio of 2.29 being greater than 1 suggests that the odds of infant death is higher when the infant receives less prenatal care.
+
+```{r}
+# a.
+cond.odds <- function(n11,n12,n21,n22) return((n11*n22)/(n12*n21))
+c(cond.odds(3,176,4,233),cond.odds(17,197,2,23))
+
+# b.
+cond.odds((3+17),(176+197),(4+2),(233+23))
+```
+
+---
+
+
+## Problem 6 - Graduate Students - Continuity Correction
+When testing independence for 2x2 tables, `R` applies a continuity correction by default. What is the name of the correction that `R` uses? How is the correction applied (i.e., what does it do)? When should it be used?
+
+Do some searching to answer the questions above.
+  
+  
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 6 Answer -|-|-|-|-|-|-|-|-|-|-|-
+By default, `R` uses Yates' continuity correction in it's implementation of the Chi-Square test for independence. Yates' correction subtracts 0.5 from the size of each residual (absolute value of the difference between observed and expected values). The goal of this method is to prevent overestimation of statistical significance for small data, and should be applied when at least one cell of the table has an expected count of less than 5.
+
+---
+
+## Problem 7 - Graduate Students: Simpson Stands His Ground
+
+Check out the paper written by Jeff Witmer (UWL mathematics/statistics alumnus) that investigates Florida's "Stand Your Ground" doctrine and the subsequent rulings on such cases. You can find the article [here](http://ww2.amstat.org/publications/jse/v23n2/witmer.pdf).
+
+Your task is to briefly describe one way in which you could improve upon the paper. For example:
+
+- Is there a part (or several) that are unclear? If so, how could you make the part(s) more understandable?
+- Is there a better way to visualize this kind of data? If so, how?
+
+### -|-|-|-|-|-|-|-|-|-|-|- Problem 7 Answer -|-|-|-|-|-|-|-|-|-|-|-
+Replace this text with your answer to this problem.
+
+```{r}
+#Use this code chunk to include code, if needed.
+```
+
+
+---
