@@ -1,0 +1,718 @@
+---
+title: "Midterm Project - Breast Cancer"
+author: "Mitch Maegaard & Luke Spellman"
+date: "11/16/2018"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Introduction
+
+```{r results='hide'}
+# load necessary packages
+library(tidyverse); library(ggplot2); library(cowplot); library(Hmisc); library(caret); library(pROC); library(glmnet); #library(Deducer)
+# read in data
+data <- read.csv("breastcancer.csv")
+dim(data)
+```
+
+##### Background Information
+
+Breast cancer forms in the cells of the breasts; according to [Mayoclinic](https://www.mayoclinic.org/diseases-conditions/breast-cancer/symptoms-causes/syc-20352470), behind skin cancer, breast cancer is the second most common cancer diagnosed in women in the United States. The substantial increase in breast cancer awareness over the past several years has helped to finance extensive research, which in turn is leading to advancements in the diagnosis and treatment of breast cancer. Although these factors have contriubted to the decline seen in the number of deaths due to the disease, it still remains a heavily researched area and further advancements are looking to be made. Quantitative measurments from cell nuclei in breast mass serve as a potential resource to help detect breast cancer at earlier stages, thus enhancing the longevity and quality of life for several women and men suffering from the disease.  
+
+Fine needle aspirate (FNA) biopsy has become an increasingly popular method for breast cancer detection because it is fairly inexpensive and noninvasive, [ASC.org](https://www.cytopathology.org/fine-needle-aspiration-frequently-asked-questions/). In the process, small samples of breast tissue mass are collected from patients that are at-risk for having breast cancer. This biopsy sample can then be further examined in a lab for the presence of cancerous cells.  
+
+```{r, out.width = "20%", include=FALSE}
+# Figure 1:![](FNAimage.gif)
+#An image of the process can be shown in figure 1.  
+knitr::include_graphics('FNAimage.gif')
+```
+
+In this study, we look to apply a statistical model that can accurately detect breast cancer based on the quantitative measurements from the FNA biopsy. The analysis will also help to pinpoint specific features that have the highest significance in distinguishing between cell types.  
+
+##### Data Collection
+
+Digitized images of a FNA of a breast mass were taken from `r length(unique(data$id))` patients being evaluated on their diagnosed level of breast cancer, including `r sum(data$diagnosis == 'M')` malignant samples and `r sum(data$diagnosis == 'B')` benign samples. These images were analyzed to identify specific quantitative characterisics of cell nuclei, and consisted of several measurments for each sample to further validate accuracy and precision.  
+
+Due to multiple measurements being taken for each characteristic, a data summary was able to be concisely represented by the sample mean, standard error (se), and the mean of the three "worst" measurements, which were defined by the three largest values from the measurements. This process was repeated for each of ten defining cell nuclei characteristics including radius, texture (standard deviation of gray-scale values), perimeter, area, smoothness (local variation in radius lengths), compactness ($\frac{perimeter^2}{area}-1$), concavity (severity of concave portions of the contour), concave points (number of concave portions of the contour), symmetry, and fractal dimension ("coastline approximation" - 1), for a total of thirty unique measurments per sample. These metrics were recorded for all patients, and were also labeled with a unique identification code and breast cancer diagnosis.  
+
+##### Data Structure
+
+```{r eval=FALSE}
+glimpse(data) # look at variable names, types, and their representation in the data
+```
+
+```{r include=FALSE}
+data.missing <- sapply(data, anyNA); sum(data.missing) # no missing vals!
+data.summary <- sapply(data[,-c(1)], function(x) summary(x)) # summary quartiles -- access w/ data.sumary$variable
+```
+
+The unique idenification variable provided to individual samples is represented as a numeric 6-digit code, but can be treated as a factor due to it's linking nature to a particular group, although it will be of little use throughout the analysis.  
+
+Diagnosis is a two-factor variable that provides information to the cancer diagnosis, "M" for malignant (`r round(with(data, mean(as.integer(diagnosis)-1)), 3)*100`% ), and "B" for benign (`r round(with(data, 1-mean(as.integer(diagnosis)-1)), 3)*100`%). This will be the response variable in the analysis, so the methodology will be constructed around a binary classification problem with malignant labeled as "1" and benign as "0".  
+
+The remaining 30 variables are real-valued features that are computed for each cell nucleus from the FNA biopsy, and correspond to the mean, standard error, and worst (mean of three largest) metrics from multiple measurements.  
+
+##### Experimental Design
+
+The known cancer samples from the dataset were classified as malignant or benign (the diagnosis), and the end goal will be to utilize a logistic regression model to predict these categories of future cancerous samples based on similar image measurements. Three metrics for all ten features are included in the study because they are seemingly representative of FNA biopsy results. We will also be working to determing if a subset of these variates are most significant in the prediction.  
+
+In an effort to build both a statistically accurate and low complexity model (to ease interpretability and implementation), a primary step is evaluating feature distribution and applying necessary transformations to minimize outliers. Graphical analysis can then be utilized to determine relationships among features, highlighting which, if any, are the strongest indicators of malignant cells. Complexity can be reduced further by dimensionality reduction through determining uniqueness among characteristics, as some variables could carry redundancy given that the data were collected from a single image. This analysis was conducted mainly through graphing and other methods of visual examination of the characteristics split between malignant and benign cells.  
+
+# Exploring and transforming the data
+
+##### Feature Transformation
+
+A primary step toward creating a final model is feature transformation, which was done through both numerical and graphical analysis in evaluating distribution plots. Proper transformation selection was expedited through Tukey's Ladder of Powers test in the `rcompanion` package, which suggests a "best fit" lambda value that will attempt to correct a variable towards a normal distribution. However, since the value returned from the baseline function can be any real-valued numeral, we slightly modified the algorithm by selecting cutoff points for various lambda values; for example, in order to reduce right-skewed data, we took lambda values in the range of 0.0 to 0.3, and applied a logarithmic transformation (the original formula suggests the transformation only at a lambda value exactly equal to 0.0). We utilized this method for other common transformations (i.e. square root, cubics, etc.) to ensure our methods were easily replicable and easier to understand than simply using the suggested lambda values.  
+
+In an effort to efficiently and cleanly visualize the applied trasnformations for all variables, a simple graphing method was also added to the function. For an input feature, the algorithm will output two separate distribution plots, one corresponding to the original variable and the other as the selected transformed variable. One example where we observed a particularly effective transformation is shown in figure 1.  
+
+```{r}
+transformations <- function (x, start = -10, end = 10, int = 0.025, plotit = FALSE) {
+  # use transformTukey as the base algorithm, then add plotting and more generalized variable updates
+  n = (end - start)/int
+  lambda = as.numeric(rep(0, n))
+  W = as.numeric(rep(0, n))
+  Shapiro.p.value = as.numeric(rep(0, n))
+  
+  for (i in (1:n)) {
+    lambda[i] = signif(start + (i - 1) * int, digits = 4)
+    if (lambda[i] > 0) {
+      TRANS = x^lambda[i]
+    }
+    if (lambda[i] == 0) {
+      TRANS = log(x)
+    }
+    if (lambda[i] < 0) {
+      TRANS = -1 * x^lambda[i]
+    }
+    
+    W[i] = NA
+    
+    if (any(is.infinite(TRANS)) == FALSE & any(is.nan(TRANS)) == FALSE) {
+      W[i] = signif(shapiro.test(TRANS)$statistic, digits = 4)
+      Shapiro.p.value[i] = signif(shapiro.test(TRANS)$p.value, digits = 4)
+    }
+  }
+  
+  df = data.frame(lambda, W, Shapiro.p.value)
+  df2 = df[with(df, order(-W)), ]
+  
+  lambda = df2[1, "lambda"]
+  
+  if(lambda < 0){ x = 1/x }
+  lambda = abs(lambda) # reset to a positive value
+    
+  # reduce right skew:
+  if (lambda >= 0 & lambda < 0.3){ TRANS = log(x); t = 'log(x)' }
+  if (lambda >= 0.3 & lambda < 0.4){ TRANS = x^(1/3); t = 'x^(1/3)' }
+  if (lambda >= 0.4 & lambda < 0.75){ TRANS = sqrt(x); t = 'sqrt(x)' }
+  
+  # preserve variable:
+  if (lambda >= 0.75 & lambda < 1.5){ TRANS = x; t = 'x' }
+  
+  # reduce left skew:
+  if (lambda >= 1.5 & lambda < 2.5){ TRANS = x^2; t = 'x^2' }
+  if (lambda >= 2.5 & lambda < 4.0){ TRANS = x^3; t = 'x^3' }
+  
+  if (plotit == TRUE){
+    
+    # original
+    p1 <- ggplot(data, aes(x)) +
+      geom_density(fill = 'dodgerblue3', alpha = 0.6) +
+      theme_minimal() +
+      xlab('x') +
+      theme(axis.title.y = element_blank())
+    
+    # transformed
+    p2 <- ggplot(data, aes(TRANS)) +
+      geom_density(fill = 'dodgerblue3', alpha = 0.6) +
+      xlab(paste0('\nx^', toString(lambda))) +
+      theme_minimal() +
+      theme(axis.title.y = element_blank())
+    
+    # combine plots
+    plots <- plot_grid(p1, p2, labels = c('Original', 'Transformed'), ncol = 1, nrow = 2)
+    
+    return(plots)
+  }
+  
+  return(TRANS)
+}
+```
+
+
+```{r}
+# gather transformed data
+data.transf <- data.frame(apply(data[-c(1,2)], 2, transformations)) # specify 2 for columns
+data.transf <- with(data, cbind(id, diagnosis, data.transf)) # add id and diagnosis back
+
+# gather transformed graphs
+transf.plots <- lapply(data[-c(1,2)], transformations, plotit = T)
+```
+
+Figure 1.  
+```{r, out.width="20%"}
+transf.plots$compactness_mean # plot an example
+```
+
+As expected, the logarithmic transformation seen in figure 1 significantly helped in shifting the feature to a more normal distribution. Even though Tukey's lambda values were slightly modified, we can see that the mapped result is still effective, while also preserving interpretability. This methodology was applied across all 30 features to reduce the significant influence of skewness (extreme values) on the resulting model. Mean feature measurements with their respective suggested and chosen tranformations are provided in table 1.  
+
+Table 1.  
+
+Feature Name | Tukey's $\lambda$ | Selected Transformation    
+--- | --- | ---    
+Radius | $x^{-0.575}$ | $1/\sqrt{x}$    
+Texture | $x^{-0.025}$ | $1/\log{(x)}$    
+Perimeter | $x^{-0.55}$ | $1/\sqrt{x}$    
+Area | $x^{-0.25}$ | $1/\log{(x)}$    
+Smoothness | $x^{0.075}$ | $\log{(x)}$    
+Compactness | $x^{0}$ | $log{(x)}$    
+Concavity | $x^{0.4}$ | $\sqrt{x}$    
+Concave Points | $x^{0.425}$ | $\sqrt{x}$    
+Symmetry | $x^{-0.35}$ | $x^{-1/3}$    
+Fractal Dimension | $x^{-2.6}$ | $x^{-3}$    
+
+##### Feature Selection
+
+Another major step in model selection included feature selection, which was performed via exploring relationships between predictors and malignant or benign status with graphical contingency tables and side-by-side violin plots, as well as an analysis of correlated predictors and their respective density plots.  
+
+Contingency tables are a quick and effective method of summarizing results of counts at different levels of factor combinations. For this analysis, in order to represent values on a continuous scale in a contingency table, the predictors can be split into their respective quartiles, then compared against diagnosis. Figure 2 provides a graphical representation of one of these contingency table relationships.  
+
+```{r}
+contingency <- function(x, y, props = FALSE, plotit = FALSE){
+  # function to grab and plot quartile contingency tables
+  # inputs:
+    # x -- numeric vector to be split into quartiles
+    # y -- factor vector
+    # props -- set to true to get table proportions
+    # plotit -- set to true to get a plot
+  
+  tabs <- table(cut(x, quantile(x)), y) # get quantiles and create table
+  ylabel <- 'No. Observations\n' # set up label in case of plotting
+  
+  if(props == TRUE){
+    tabs <- round(prop.table(tabs), 3)*100 # convert to percentages
+    ylabel <- '% Observations\n'
+  }
+  
+  if(plotit == TRUE){
+    tabs <- as.data.frame(tabs)
+    p <- ggplot(tabs, aes(x = Var1, y = Freq, fill = y)) +
+      geom_bar(stat = 'identity', alpha = 0.7) +
+      #ggtitle('Quartile Contingency Table') +
+      xlab('\nQuartiles') +
+      ylab(ylabel) +
+      scale_fill_manual('Diagnosis', values = c('dodgerblue3', 'firebrick3'), labels = c('Benign', 'Malignant')) +
+      theme_minimal()
+    return(p)
+  }
+  
+  return(tabs)
+}
+```
+
+```{r}
+contingency.tabs <- lapply(data.transf[,-c(1,2)], contingency, y = data.transf$diagnosis, props = T)
+contingency.plots <- lapply(data.transf[,-c(1,2)], contingency, y = data.transf$diagnosis, props = T, plotit = T)
+```
+
+Figure 2.  
+```{r}
+plot_grid(contingency.plots$radius_mean,
+          contingency.plots$texture_se,
+          ncol = 1, nrow = 2,
+          labels = c('Radius (mean)', 'Texture (se)'),
+          label_size = 12, hjust = -1, vjust = 1)
+```
+
+Comparing the two example features in figure 2, we can see that a majority of malignant observations fall in the lower quartile of the transformed radius mean, while a majority of benign observations are in the upper quartile. Although it is more important to observe differences in the transformed variables in this analysis, it's important to keep in mind that these features have already been transformed, and reversing the transformation ($\frac{1}{\sqrt{x}}$ in this case) would give a majority of malignant observations in the upper quartile of the mean radius. This gives good indication that radius could be a significant predictor in building a final model. On the other hand, the transformed "texture se" feature shows incredibly little variation over the quartiles; with such marginal distinction, it is unlikely that this will be an effective predictor in predicting cancer status.  
+
+Again, with the response variables taking on continuous, numeric values, violin plots supply a powerful method of examining the data; figure 3 displays a side-by-side violin plot that indicate the median, lower and upper quartiles, outliers (if any exist), and kernel density estimations (similar to probability density) for multiple group-wise comparisons.  
+
+```{r}
+violin <- function(data, x, y){
+  
+  p <- ggplot(data, aes(y, x)) +
+    geom_violin(aes(fill = y, color = y), alpha = 0.5) +
+    geom_boxplot(width = 0.05) +
+    guides(fill = FALSE, color = FALSE) +
+    theme_minimal() +
+    scale_x_discrete(labels = c('Benign', 'Malignant')) +
+    theme(axis.title.y = element_blank(),
+          axis.title.x = element_blank())
+  
+  return(p)
+}
+```
+
+Figure 3.  
+```{r, out.height="50%"}
+plot_grid(with(data.transf, violin(data.transf, area_mean, diagnosis)),
+          with(data.transf, violin(data.transf, fractal_dimension_mean, diagnosis)),
+          labels = c('Area (mean)', 'Fractal Dimension (mean)'), label_size = 12, ncol = 2, nrow = 1)
+```
+
+The graph on the left in figure 3 shows area mean, one of the transformed variables where we saw an evident difference in sample distribution between diagnosis categories. Here, malignant observations tended to have lower radius values (corresponding to higher values in the pre-transformed data), along with more outliers in the upper quartile. This gave us an indication that the mean radius metric could provide useful insight for our final model. On the other hand, the graph on the right was an example where we didn't find much difference between sample distributions; the medians appear to be approximately the same, along with the distributions. Thus, we would likely opt to not include these types of variables in our final model.  
+
+##### Dimensionality Reduction
+
+```{r}
+# select variables with highest correlations
+cor.vars <- data.transf %>%
+  dplyr::select(-c(id, diagnosis)) %>% # look at all variables
+  cor() %>% # correlation matrix
+  round(3) %>%
+  as.table() %>%
+  as.data.frame() %>% # convert to df
+  subset(abs(Freq) > 0.8) %>% # grab correlations > 0.8
+  filter(Var1 != Var2) %>% # remove diagonal
+  mutate(Var1 = as.character(Var1),
+         Var2 = as.character(Var2)) %>% # steps for determining uniquness
+  mutate(key = paste0(pmin(Var1, Var2), pmax(Var1, Var2), sep = '')) %>%
+  distinct(key, .keep_all = TRUE) %>%
+  dplyr::select(-key) %>% # drop uniqueness measure
+  group_by(Var2) %>%
+  mutate(count = n()) %>% # count occurrences of high correlation
+  arrange(desc(count)) %>%
+  filter(count > 1) %>% # keep ones with multiple high correlations
+  distinct(Var2) # grab column names
+
+# "at risk" features
+corvar.cols <- as.formula(paste('~', paste(cor.vars$Var2, collapse = ' + ')))
+```
+
+Dimensionality reduction was performed to remove highly correlated variables, as these "duplicate" features don't provide any further insight to classification, while contributing increased model complexity. This process involved diagnosing values from correlation matrices and their respective plots, then further examining distribution plots to evaluate which feature would be most representative of the subset, thus would be the one kept for future modeling.
+
+Considering the need to diagnose collinearity across 30 features, excluding sample ID because of it's uniqueness and diagnosis because it is the desired response variable, a simple yet efficient method is of high importance. The process begins by creating a matrix of correlation values for all 30 features, resulting in a set of 900 values to pick through, with 1's on the diagonal (each feature is obviously a 1-1 correlation with itself). To make the data easier to work with, the matrix was then transformed into a 900x3 array, where the first two columns represented all combinations of features, and the third represented the correlation between the two variables. In order to minimize search time on variables, and using a "high correlation" cutoff of 0.8, the data was filtered to include only unique permutations of features that had correlations over the cutoff, excluding those related to themselves. These variables were determined to be "at risk" for high collinearity, and were further diagnosed via graphical analysis.  
+
+Pairwise comparison plots were utilized in diagnosing collinearity between the at risk features; variable name is included on the diagonal, the lower panels include a scatter-plot of the variables against each other with an attempted linear fit line, and the upper panels give the absolute value of the numeric correlation scaled 0 to 1, where a value further from 0 indicates stronger correlation. 
+
+```{r}
+panel.cor <- function(x, y, digits = 2, prefix = '', cex.cor, ...){
+  # add correlation coef. values to pairwise plot
+  usr <- par('usr'); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r <- abs(cor(x, y))
+  txt <- format(c(r, 0.123456789), digits = digits)[1]
+  txt <- paste0(prefix, txt)
+  if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+  text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+```
+
+```{r include=FALSE}
+# Create pairwise plots to test for collinearity. (linear correlation included on plot)
+pairs(corvar.cols, data=data.transf, lower.panel=panel.smooth, upper.panel=panel.cor)
+```
+
+Figure 4.  
+```{r out.width="50%"}
+# now grab only the ones with high correlation so we can show those off
+pairs(~ radius_mean + perimeter_mean + area_mean + radius_worst + perimeter_worst,
+      data = data.transf, lower.panel=panel.smooth, upper.panel=panel.cor)
+```
+
+From figure 4, it is shown that the means of radius, perimeter, and area have correlations extremely close to 1.0. Further, these three metrics also boast correlations above 0.97 with the "worst" measurements from radius and perimeter, which also have a 0.99 correlation with each other. We plan on removing all but one of these five features from our final model, as they will only add complexity to the design. From this subset, we selected the mean radius as our representative "distance" metric based on decisions from the histograms displayed in figure 5 for the following reasons; it's lesser skew and potentially bi-modal distribution are appealing for observing differences in cancer status, and it's range of values are most appealing to work with carrying forward.  
+
+```{r}
+gghist <- function(data, x, bin = 15){
+  # helper function for plotting histograms of the same format quickly
+  p <- ggplot(data, aes(x)) +
+    geom_histogram(fill = 'dodgerblue3', alpha = 0.6, bins = bin) +
+    theme_minimal() +
+    theme(axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.text.y = element_blank())
+  return(p)
+}
+```
+
+Figure 5.  
+```{r}
+plot_grid(gghist(data.transf, data.transf$radius_mean),
+          gghist(data.transf, data.transf$perimeter_mean),
+          gghist(data.transf, data.transf$area_mean),
+          gghist(data.transf, data.transf$radius_worst),
+          gghist(data.transf, data.transf$perimeter_worst),
+          ncol = 2, nrow = 3,
+          labels = c('Radius Mean', 'Perimeter Mean', 'Area Mean', 'Radius Worst', 'Perimeter Worst'),
+          hjust = -.1)
+```
+
+The mean number of concave points also holds high correlation with several other variables, including the mean severity of concavity; therefore, we opt to remove this feature as well. As with the distance metrics, histograms in figure 6 provided a visual diagnostic and validated our choice of the severity of concavity, because it is more approximately normally distributed. Finally, compactness "worst" is removed because of it's high correlation (0.90) with it's respective "mean" metric.  
+
+Figure 6.  
+```{r}
+plot_grid(gghist(data.transf, data.transf$concavity_mean),
+          gghist(data.transf, data.transf$concave.points_mean),
+          ncol = 2, nrow = 1,
+          labels = c('Concavity Mean', 'Concave Points Mean'), hjust = -.2)
+```
+
+The four remaining features, along with the others from our dataset that did not pose any durastic correlation issues up-front, will be utilized in building an initial model.  
+
+```{r eval=FALSE}
+# figure 7
+# remove perimeter, area, radius worst, perimeter worst, concave.points, and compactness worst
+corvar.cols2 <- as.formula(paste('~', paste(cor.vars$Var2[-c(3, 5, 6, 8, 9, 10)], collapse = ' + ')))
+
+pairs(corvar.cols2, data=data.transf, lower.panel=panel.smooth, upper.panel=panel.cor)
+```
+
+# The Logistic Model
+
+The methods carried out through data exploration carry over into building an inital model. Using the selected transformations, we remove all highly correlated variables. Additionally, diagnosis is converted to a "1" if malignant and "0" if benign. We choose the malignant value to be the "positive" response because those are the "at-risk" samples we would like to identify.  
+
+```{r}
+# first remove all variables we said we were going to take out!
+data.model <- data.transf %>%
+  dplyr::select(-c(perimeter_mean, area_mean, fractal_dimension_mean, concave.points_mean, smoothness_se, fractal_dimension_se, texture_se, radius_worst, perimeter_worst, compactness_worst)) %>%
+  mutate(diagnosis = ifelse(diagnosis == 'M', 1, 0)) # convert diagnosis to binary response -- 1 if malignant
+```
+
+```{r}
+train_test_split <- function(data, split_size = 0.75, seed = 3297){
+  # inputs:
+    # data -- data set to split
+    # split_size -- proportion to keep in training set
+  # output:
+    # list of a train and test set
+  obs <- nrow(data)
+  sample_size <- floor(split_size * obs) # take % for training, leave rest for test
+  set.seed(seed)
+  train_idx <- sample(seq_len(obs), size = sample_size)
+  
+  train <- data[train_idx,]
+  test <- data[-train_idx,]
+  
+  return(list(train = train, test = test))
+}
+
+data.split <- train_test_split(data.model); train <- data.split$train; cv <- data.split$test
+```
+
+Upon implementation, our model will be used to classify cancerous cells on a held-out test set of samples we have not seen before. To ensure confidence prior to implementation, the data we have available to us should be partitioned such that we can both train a model and check the fit on data the model hasn't used. To do this, we split our transformed data into 75% training, and 25% cross-validation. The process is done through random sampling based on a set seed (for replicable results), and results in a training set size of `r nrow(train)` and cross validated set size of `r nrow(cv)`.  
+
+```{r}
+GeomROCplot <- ggproto(
+   
+   "GeomROCplot", Geom,
+   required_aes = c("x", "y"),
+   
+   default_aes = aes(colour = "black",
+                     size = 1,
+                     linetype = 1,
+                     alpha = 1,
+                     fill = NA,
+                     diagonal =TRUE,
+                     diagonal_colour = 'black',
+                     diagonal_alpha = 0.8,
+                     diagonal_linetype = 2,
+                     diagonal_width = 0.5 ),
+   
+   draw_key = draw_key_abline,
+   
+   draw_group = function(data, panel_scales, coord) {
+      
+      n <- nrow(data)
+      if (n <= 2) return(grid::nullGrob())
+      
+      coords <- coord$transform(data, panel_scales)
+      
+      first_row <- coords[1, , drop = FALSE]
+      
+      if(first_row$diagonal){
+         
+         grid::gList(
+            
+            grid::linesGrob(
+               x= coords$x,
+               y=coords$y,
+               default.units = "native",
+               gp = grid::gpar(
+                  
+                  col = scales::alpha(
+                     first_row$colour,
+                     first_row$alpha),
+                  
+                  lwd = first_row$size * .pt,
+                  lty = first_row$linetype)),
+            
+            grid::linesGrob(
+               x=c(0,1),
+               y=c(0,1),
+               default.units = "native",
+               gp = grid::gpar(
+                  
+                  col = scales::alpha(
+                     first_row$diagonal_colour, 
+                     first_row$diagonal_alpha),
+                  
+                  lwd = first_row$diagonal_width * .pt,
+                  lty = first_row$diagonal_linetype
+               )
+            )
+         )
+      }
+      
+      else{
+         grid::linesGrob(
+            x= coords$x,
+            y=coords$y,
+            default.units = "native",
+            gp = grid::gpar(
+                      col = scales::alpha(
+                               first_row$colour, 
+                               first_row$alpha),
+                            
+                      lwd = first_row$size * .pt,
+                      lty = first_row$linetype)
+         )
+      }
+   }
+)
+
+
+geom_roc_plot <- function(
+   
+   mapping = NULL, 
+   data = NULL,
+   stat = "identity",
+   position = "identity", 
+   na.rm = FALSE, 
+   show.legend = NA, 
+   inherit.aes = TRUE, ...) {
+   
+   
+   layer(
+      geom = GeomROCplot, 
+      mapping = mapping,
+      data = data, 
+      stat = stat,
+      position = position, 
+      show.legend = show.legend,
+      inherit.aes = inherit.aes,
+      params = list(na.rm = na.rm, ...)
+   )
+   
+}
+```
+
+```{r}
+accuracy <- function(model, test, y, roc = FALSE, threshold = 0.5){
+  # input:
+    # model -- logistic model fit on data
+    # test -- data to perform testing on
+    # y -- y value from test data
+    # type -- {confusion, roc}
+    # threshold -- value where we want to check our prediction
+  # output:
+    # results -- confusion matrix with model fits on test data
+  preds <- predict(model, newdata = data.frame(test), type = 'response') # make predictions with model
+  
+  if(roc == TRUE){
+    fit <- roc(y, preds)
+    auc <- round(fit$auc, 4)
+    metrics <- fit$sensitivities + fit$specificities
+    threshold <- fit$thresholds[which(metrics == max(metrics))]
+    
+    roc.dat <- data.frame(TPR = fit$sensitivities, FPR = (1-fit$specificities))
+    
+    roc.plot <- ggplot(roc.dat, aes(FPR, TPR)) +
+      geom_roc_plot(color = 'palegreen3') +
+      labs(x = '\nFalse Positive Rate (1 - specificity)', y = 'True Positive Rate (sensitivity)\n') +
+      ggtitle('ROC Curve', subtitle = paste('AUC:', auc)) +
+      theme_minimal()
+  }
+  
+  preds <- ifelse(preds > threshold, 1, 0) # translate to binary output
+  
+  # output acc, spec, and sens with confusion matrix
+  results <- confusionMatrix(table(preds, y), positive = '1')
+  
+  ifelse(roc == TRUE, return(list(results = results, plot = roc.plot)), return(results))
+}
+```
+
+We begin the modeling process by fitting a fully saturated model, which utilizes all of the predictors left after removing higly correlated features to predict cancer status. To assess model fit, we make a naive assumption that we have an equal amount of malignant and benign samples in our training and test sets. This corresponds to a "threshold" value of 0.5, meaning that if our model outputs a probability over 0.5, we predict "malignant", and "benign" if it's under. A confusion matrix calculates a cross-tabulation of observed and predicted classes with associated statistics. Finding an appropriate balance between sensitivity (the percentage of actually malignant samples that are predicted as malignant), specificity (the percentage of actually benign samples that are predicted as benign), and overall accuracy (the percentage of correctly predicted outcomes) will be of high importance for implementing our classification model. Sensitiviy should be maximized to ensure all patients with malignant cells are treated as such, while specificity should be maximized to reduce the more extensive tests for malignant cells, which could be extremely invasive or harmful to the patient.  
+
+```{r results='hide'}
+model.full <- glm(diagnosis ~ . -id, data = train, family = binomial) # model with all predictors
+accuracy(model.full, cv, cv$diagnosis) # acc: 99.15%, sens: 97.22%, spec: 100%, params: 20
+summary(model.full)
+```
+
+A saturated model fit on 20 parameters misclassifies only one of the `r nrow(cv)` samples, attaining an overall accuracy of 99.15%, with sensitivity of 97.22% and specificity of 100%. Based on these predictive metrics alone, we find this model to be effective in classifying cancerous samples. However, examining a summary of the model fit, we find that all p-values are extremely close to 1; an initial analysis may deem that none of the predictors are useful in classifying cancerous cells, but we instead point to likely multicollinearity and potential overfitting due to the large standard errors in relation to their respective coefficient estimates, as well as an excessively large number of Fisher scoring iterations (25). In addition to overfitting, model complexity also decreases interpretability; this is extremely beneficial in our scenario because we would ideally like to pinpoint cancer cell characteristics that doctors could evaluate in a more streamlined approach. Thus, although we find the predictive power to be extremely high, more extensive work needs to be done on simplifying model complexity to eliminate overfitting and ease interpretability.  
+
+# Model Selection
+
+Model selection was performed in an attempt to reduce model complexity and eliminate multicollinearity that we observed in our first attempt at a fully saturated model. In doing such, we attempted three distinct procedures involving combinations forward/backward stepwise regression and LASSO (least absolute shrinkage and selection operator) regression.  
+
+In the first procedure, we initially conducted an automated forward/backward feature selection algorithm, where the goal was to maximize the log likelihood with an additional penalty for the number of parameters included in the model, which in turn relates to minimizing AIC. After attaining a subset of 11 parameters, we noted that a few predictors still had correlations over 0.8, which we deemed unacceptable for our model because of the adverse effects on significance levels. To combat, we implemented LASSO regression, which is a method that performs both variable selection and regularization in order to enhance prediction accuracy and interpretability of the statistical model it produces. This further subsetted our model to just 8 parameters, although we found one to be statistically insignificant. An ANOVA test on models fit with and without this parameter (perimeter standard error) yielded a p-value of 0.2872, indicating that we should favor the simpler model; this 7-feature model was our "final" model for the first procedure, and yielded accuracy of 99.15%.  
+
+Our first procedure occassionally produced weaker models (based on individual features' p-value significance) due to flaws in stepwise selection on a large number of parameters, where it could potentially come to various conclusions in minimizing AIC along different paths and handling collinearity. This prompted us to rearrange our process to perform LASSO first, followed by stepwise selection and further by removing any remaining highly correlated variables and insignificant predictors. LASSO adds a penalty to the sum of square errors that is proportional to the terms coefficient; forcing the sum of coefficients to be less than an optimal threshold in turn forces some of the parameter estimates to be extremely small, in which case we remove them from the model. Following LASSO, any remaining features with correlation greater than 0.79 were removed from the model due to their influence on the significance of predictors. This resulted in a model fit with 5 statistically significant predictors at the $\alpha = 0.05$ level, but a decrease in accuracy to 97.46%.  
+
+```{r}
+lasso <- function(formula, data, y, epoch = 10, cut_val = 0.1, sig = 0.1){
+  
+  final <- '' # keep track of the features found in each iteration
+  
+  # perform lasso on data 'epoch' times
+  for(i in 1:epoch){
+    seed <- as.integer(runif(1, 1, 9999)); set.seed(seed) # set seed to a random number (sometimes changes lasso output)
+    
+    # lasso regression
+    x <- model.matrix(formula, data)[,-1] # fit a model with all predictors, taking out id and diagnosis
+    cv.lasso <- cv.glmnet(x, y, alpha = 1, family = 'binomial', type.measure = 'class') # set alpha to 1 for lasso
+    
+    # select features from original data where the coefficients have NOT been shrunk to 0
+    idx <- which(abs(coef(cv.lasso, s = 'lambda.min')[-1]) > cut_val)
+    features <- colnames(x)[idx]
+    
+    # construct formula and model from the subset selected by lasso
+    reduced <- as.formula(paste('diagnosis ~', paste(features[-1], collapse = ' + '))) # drop intercept for writing formula
+    model <- glm(reduced, data = data, family = binomial) # fit a new model
+    
+    # find the statistically significant features from the new model fit
+    ps <- which(coef(summary(model))[,4] < sig) # grab low p-vals
+    final_features <- features[ps] # parameters associated with those p-vals
+    final <- c(final, final_features) # add features found in this iteration
+  }
+  
+  # table array of features for column names and counts for "significant" in a post-lasso model
+  tbl <- data.frame(table(final))
+  # grab only features that were "significant" more than 50% of the trials -- ensures we always get the same parameters
+  params <- subset(tbl, Freq > i/2)$final
+  form <- as.formula(paste('diagnosis ~', paste(params, collapse = ' + ')))
+  
+  # "end" model is one fit with the most common significant predictors from 'epoch' iterations of lasso
+  model <- glm(form, data = data, family = binomial)
+  return(model)
+}
+```
+
+```{r results='hide'}
+model <- lasso(model.full$formula, train, train$diagnosis)
+accuracy(model, cv, cv$diagnosis)
+summary(model)
+```
+
+```{r results='hide'}
+# even better accuracy at optimal threshold
+accuracy(model, cv, cv$diagnosis, roc = TRUE)$results
+```
+
+We noted the inconsistency of both stepwise selection and LASSO regression in the presence of highly correlated variables. From this, we simplified our selection technique to choosing only significant variables from a model fit following LASSO on our saturated model. This commonly resulted in the same final parameters, although we would occassionally get alternate results due to multicollinearity. To ensure consistency in the method, we repeated LASSO several times and noted all significant predictors from each output; we then took parameters that were present in at least 50% of the iterations and used those in building a final model. By doing such, we consistently observe the same three parameters including "worst" measurments from area, smoothness, and texture, all of which are statistically significant at the $\alpha < 0.001$ level; we also find that these three predictors yield an accuracy of 98.31% with a classification threshold of 0.5, making only 2 misclassifications on 118 observations. Comparing this model to the fully saturated model, we find that we retain nearly the same predictive power while significantly reducing model complexity, resulting in both interpretability and generalization when introduced to new data. We also favor this model selection process over the previous two because of it's reliability in convergence to the same few parameters, improved (decreased) model complexity, and high predictive accuracy. Complete results from modeling procedures can be found in table 2 below.  
+
+Table 2.  
+
+Process | Total Parameters | AIC | Sensitivity | Specificity | Accuracy  
+--- | --- | --- | --- | --- | ---  
+Fully Saturated | 20 | 42.0 | .9722 | 1.000 | .9915  
+Stepwise $\rightarrow$ LASSO | 7 | 51.04 | .9722 | 1.000 | .9915  
+LASSO $\rightarrow$ Stepwise | 5 | 61.19 | .9444 | .9878 | .9746  
+Repeated LASSO | 3 | 69.07 | .9722 | .9878 | .9831  
+
+# Optimizing the Threshold for Accuracy
+
+Because we are using logistic regression for classification, we need to specify a value at which predicted probabilities will be rounded up to 1 (malignant), or down to 0 (benign). Previously, we defined this "threshold" to be 0.5 (an even split between the two classifications). By varying the threshold from 0.5, classification of cancer statuses can improve or decline, and we search to find the optimal value for this threshold to maximize predictive power.  
+
+```{r}
+roc_data <- function(model, data, y, preds){
+  
+  preds <- predict(model, newdata = data.frame(data), type = 'response')
+  fit <- roc(y, preds)
+  roc.dat <- data.frame(sens = fit$sensitivities,
+                        spec = fit$specificities,
+                        thresholds = fit$thresholds,
+                        metrics = (fit$sensitivities + fit$specificities))
+  return(roc.dat)
+}
+```
+
+Figure 7.  
+```{r}
+roc.data <- roc_data(model, cv, cv$diagnosis)
+opt.thresh <- with(roc.data, thresholds[which(metrics == max(metrics))])
+acc <- round(accuracy(model, cv, cv$diagnosis, threshold = opt.thresh)$overall[1], 3)
+lo.t <- 0.1; md.t <- 0.5; hi.t <- 0.9
+lo <- round(accuracy(model, cv, cv$diagnosis, threshold = lo.t)$overall[1], 3)
+md <- round(accuracy(model, cv, cv$diagnosis, threshold = md.t)$overall[1], 3)
+hi <- round(accuracy(model, cv, cv$diagnosis, threshold = hi.t)$overall[1], 3)
+
+ggplot(roc.data, aes(x = thresholds)) +
+  geom_line(aes(y = sens, color = 'Sensitivity'), size = 1) +
+  geom_line(aes(y = spec, color = 'Specificity'), size = 1) +
+  geom_vline(xintercept = opt.thresh, color = 'green3', linetype = 'dashed') +
+  geom_vline(xintercept = lo.t, color = 'lightcoral', linetype = 'dashed') +
+  geom_vline(xintercept = md.t, color = 'gold', linetype = 'dashed') +
+  geom_vline(xintercept = hi.t, color = 'lightcoral', linetype = 'dashed') + # change from 'gold'
+  geom_label(x = opt.thresh, y = acc-0.07,
+             label = paste('Optimal Threshold:', round(opt.thresh, 3), '\nAccuracy:', acc),
+             fill = 'lightgreen') +
+  geom_label(x = lo.t, y = lo-0.12,
+             label = paste('Threshold:', toString(lo.t), '\nAccuracy:', lo),
+             fill = 'lightcoral') +
+  geom_label(x = md.t, y = md-0.12,
+             label = paste('Threshold:', toString(md.t), '\nAccuracy:', md),
+             fill = 'lightyellow1') +
+  geom_label(x = hi.t, y = hi-0.12,
+             label = paste('Threshold:', toString(hi.t), '\nAccuracy:', hi),
+             fill = 'lightcoral') + # changed from 'lightyellow1'
+  ggtitle('Classification Threshold Optimization') +
+  labs(x = '\nThreshold', y = 'Detection Rate\n') +
+  ylim(c(.75, 1.0)) +
+  theme_minimal() +
+  theme(legend.position = c(.5, .15),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = 'white', size = 0.2, linetype = 'solid'))
+```
+
+Figure 7 effectively communicates results about the performance of our final model as we modify the classification threshold from 0.5. Specificity steadily increases as threshold increases, while sensitivity is downward-sloping from a maximum (100%) at approximately `r round(opt.thresh, 3)`. We can determine overall accuracy at varying threshold values utilizing the relationship between sensitivities and specificities; in doing so, we observe that at a threshold of `r lo.t`, accuracy is approximately `r lo*100`%, while moving to a higher value of `r hi.t` yields the same accuracy of `r hi*100`%. Each of these accuracies are lower than the results obtained in the previous section (99.15% at `r md.t` threshold). We find that the optimal classification threshold can be specified by the point at which the sum of sensitivities and specificities from the receiver operating characteristic (ROC) curves produce a maximal value (`r round(opt.thresh, 3)`). Although in this case the accuracy remains the same at `r acc*100`%, we can be more certain that this is the optimal threshold for our classification model due to the results carried out in this section.  
+
+# Results Summary
+
+In diagnosing cancer status, our final classification model consists of just three parameters including "area_worst", "smoothness_worst", and "texture_worst". Each of these three parameters were deemed as highly statistically significant in predicting diagnosis given `r nrow(train)` training samples, as is shown in table 3.  
+
+```{r include=FALSE}
+# Figure 8.  
+#summary(model)
+round(coef(summary(model)), 3)
+```
+
+Table 3.  
+
+. | Coef. Estimate | S.E. | Z-score | p-value  
+--- | --- | --- | --- | ---  
+Intercept | 34.800 | 8.818 | 3.946 | $\approx 0$  
+Area (worst) | -826.224 | 146.659 | -5.634 | $\approx 0$  
+Smoothness (worst) | 14.304 | 2.914 | 4.909 | $\approx 0$  
+Texture (worst) | 7.198 | 1.815 | 3.967 | $\approx 0$  
+
+At an optimal classification threshold of `r round(opt.thresh, 3)`, we attained sensitivity of 100%, specificity of 98.78%, and overall accuracy on `r nrow(cv)` cross-validation samples of 99.15%. These metrics correspond to one misclassification, where we predicted a sample to be malignant when it was actually benign. The tradeoff between sensitivity and specificity accuracy was heavily debated in choosing a final model for ethical reasons; our single misclassification illustrates our concern over this issue in that we wanted to "error on the side of caution" in sacrificing specificity for sensitivity, to ensure that all patients predicted to have cancer would rather undergo additional, potentially invasive, testing as opposed to allowing malignant cells to manifest in the tissue and likely become significantly more dangerous. Figure 8 displays a ROC curve with an area under the curve (AUC) of 0.9973, indicating the high classification power of our model. All of these factors played an important role in constructing a final model that we believe will have the greatest utility in practice.  
+
+Figure 8.  
+```{r}
+accuracy(model, cv, cv$diagnosis, roc = TRUE)$plot
+```
+
+```{r results='hide'}
+# Test Results
+
+# load test data and apply transformations
+test <- read.csv('breastcancer-test-blinded.csv') %>%
+  mutate(texture_worst = log(texture_worst), # .125 = log
+         smoothness_worst = log(smoothness_worst), # .25 = log
+         area_worst = 1/sqrt(area_worst)) # -.425 = 1/sqrt
+# make predictions with our threshold value
+preds <- ifelse(predict(model, newdata = data.frame(test), type = 'response') > opt.thresh, 'M', 'B')
+output <- with(test, cbind.data.frame(id, preds))
+colnames(output) <- c('id', 'diagnosis')
+write.csv(output, file = 'cancerpreds.csv', row.names = FALSE)
+```
