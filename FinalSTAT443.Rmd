@@ -1,0 +1,1070 @@
+---
+title: "Predicting Poverty"
+author: "Mitch Maegaard & Brad Johnson"
+date: "12/15/2018"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+```
+
+# Introduction
+
+```{r}
+# load necessary packages
+library(tidyverse); library(ggplot2); library(VIM); library(corrplot); library(psych); library(factoextra); library(ggalt); library(nnet); library(pROC); library(caret); library(doParallel); library(UBL)
+
+theme_set(theme_minimal()) # set ggplot theme
+
+poverty <- read.csv('poverty.csv') # read-in data
+classes <- with(poverty, prop.table(table(Target)))
+```
+
+##### Background Information
+
+Historically, social programs have faced difficulty in supplying aid to the individuals that need it most, especially when they aim to target the poorest segments of the population. This proves to be difficult due to the lack of income and expense records that are necessary to show that they qualify for such aid. To combat this, we will instead consider a family's observable household attributes as well as individual-level characteristics in an attempt to classify poverty levels into four distinct groups. The groups of poverty in study include (1) extreme poverty, (2) moderate poverty, (3) vulnerable households, and (4) non-vulnerable households.  
+
+##### Data Structure
+
+In the original dataset, each of `r nrow(poverty)` rows represented a single individual from a household, and are labeled by a unique identification code. These individuals are further grouped into `r with(poverty, nlevels(idhogar))` households, which are also labeled with an identification code. These house codes will be useful in collecting individual-level data in describing families more in-depth, rather than looking specifically at household-level data.  
+
+Each individual is described by `r ncol(poverty)-1` features, a majority of which are on a binary scale, indicating the presence of each attribute. The variables that are *not* on a binary scale are numeric, and contain information relating to counts or squared terms of counts. Additionally, most of the variables have uninterpretable names, and we needed to rely heavily on the description of individual features and those that appear to be named similarly.  
+
+Individuals are also labeled with a classification into one of the four poverty levels, as indicated by `Target`, and will serve as the response variable in our analysis. One extremely important piece of information to note here is the class imbalance of poverty levels; non-vulnerable households make up `r 100*round(classes[4],3)`% of the data, while extreme poverty is the proportionally the smallest group, constituting only `r 100*round(classes[1],3)`%. The implications of this class imbalance will be further examined in our data exploration.  
+
+##### Experimental Design
+
+Because financial aid is granted on a household-level, we will only be concerned with individuals that are labeled with their family position as "household head". Given the target poverty classifications and data structure we are dealing with, the end goal will be to utilize a multinomial log-linear model to classify households into the four distinct levels. A major benefit of modeling with a logistic model is that we retain interpretability, instead of attaining a "black box" of classification information; thus, a focal point of our analysis will be in determining how to best subset our data with the features we have, along with combining or creating new features, in an attempt to balance both simplicity and accuracy.  
+
+To do this, we will need to primarily perform a thorough exploratory analysis to understand all the features included in the study, as well as their impact on the response variable. Then, we will consider reverse-engineering some of the binary variables into factor-level features, and further look to create additional information with combinations of existing variables through feature engineering. These techniques will be combined with exploratory factor analysis to determine statistically appropriate linear combinations of our engineered features; doing such should result in a significant decrease in parameters, while still retaining all of the necessary information.  
+
+# Data Exploration
+
+##### Class Imbalance
+
+Target is the four-level ordinal variable indicating groups of income levels that we are trying to classify. Attempting to completely understand the classification problem at-hand, it is important to note the class imbalances; on the upper level, the non-vulnerable households make up approximately `r 100*round(classes[4],3)`%, while vulnerable, moderate, and extreme-level households make up `r 100*round(classes[3],3)`%, `r 100*round(classes[2],3)`%, and `r 100*round(classes[1],3)`%, respectively; the resulting distribution of poverty levels is outlined in figure 1.  
+
+```{r}
+ggplot(poverty, aes(x = '', fill = factor(Target))) + # x=factor(1)
+  geom_bar(width = 1) +
+  coord_polar(theta = 'y', start = pi / 3) +
+  scale_fill_brewer(palette = 'Reds', direction = -1,
+                    name = 'Target Classes',
+                    labels = c('Extreme Poverty', #1
+                               'Moderate Poverty', #2
+                               'Vulnerable Households', #3
+                               'Non-Vulnerable Households')) + #4
+  labs(x=NULL, y=NULL, title = 'Poverty Level Distribution') +
+  theme(axis.line = element_blank())
+```
+
+**Figure 1:** Identifying poverty class imbalances.
+
+Although logistic regression modeling techniques are fairly robust to skewed distributions of response variables, they still retain some bias in predicting a majority class and neglecting the minority, which is our main topic of understanding. We plan to re-visit this issue in the modeling phase by considering some additional steps to more appropriately assess model fit and thus attain a better solution to our problem of targeting individuals living in extreme poverty.  
+
+##### Missing Data
+
+Another important piece of information to diagnose early in our analysis is identifying features with missing values, and assessing how to deal with those cases. In checking for inconsistencies, we find 7,522 missing reports under the number of years behind in school (`rez_esc`), 6,951 in the number of tablets a household owns (`v18q1`), as well as 6,504 under individuals' monthly rent payment (`v2a1`). Because of the large proportionality of our data that these variates take up, we will need to dig deeper into their metrics and assess the appropriateness of dropping the feature in which we could lose some valuable information, or performing imputations, which would be much preferred.  
+
+```{r include=FALSE}
+# Figure 2.
+# Missing values
+poverty %>%
+  select_if(function(x) any(is.na(x))) %>% # which columns have missing values
+  summarise_all(funs(sum(is.na(.)))) %>% # counts of missing
+  melt() %>%
+  ggplot(aes(reorder(variable, -value), value)) +
+    geom_bar(stat = 'identity', fill = 'dodgerblue3', alpha = 0.7) +
+    geom_text(aes(label = value), vjust = -0.5) +
+    labs(y = 'Missing Cases\n', title = 'Missing Observations by Feature') +
+    theme(axis.title.x = element_blank())
+```
+
+To mitigate information loss, we start by examining `rez_esc`, which has `r 100*round(with(poverty, sum(is.na(rez_esc))) / nrow(poverty), 3)`% of it's observations absent; although we have a few other variables such as `escolari` (years of schooling) or `meaneduc` (average years of education for adults) that *might* be able to serve as fillers, this is still a unique variable in the sense that it is looking specifically at the years behind in schooling. In collecting summary statistics of the minority of observations that *do* exist for `rez_esc`, we see that the variable is likely only taking school-age kids into account, given that it has an age range of `r filter(poverty, !is.na(rez_esc)) %>% select(age) %>% min()` to `r filter(poverty, !is.na(rez_esc)) %>% select(age) %>% max()` years old. Subsetting based on this information, we find only `r filter(poverty, age > 7 & age < 19) %>% select(rez_esc) %>% is.na() %>% sum()` instances of missing values, so we can impute the remaining NA's with median values.  
+
+```{r include=FALSE}
+# Figure 3.
+ggplot(filter(poverty, is.na(rez_esc)), aes(age)) +
+  geom_bar(fill = 'dodgerblue3') +
+  theme(axis.title.y = element_blank()) +
+  labs(x = 'Age', title = 'Age Distribution', subtitle = 'People Missing Values for \"years behind in schooling\"')
+```
+
+We next look at `v18q1`, or the number of tablets a family has; we *do*, in fact, have a boolean variable indicating whether or not an individual owns a tablet. Based on the breakdown between variables, we note that for every observation with a missing "number of tablets", they also have an indicator that they do *not* possess any tablets; thus, we are safe to impute the missing values in "number of tablets" with 0's.  
+
+```{r include=FALSE}
+# good graph for our visualization, but doesn't provide enough valuable info for the reader
+ggplot(filter(poverty, is.na(v18q1)), aes(x = '', fill = as.factor(v18q))) +
+  geom_bar(width = 1) +
+  coord_polar(theta = 'y', start = pi/3) +
+  scale_fill_brewer(palette = 'Blues', direction = -1,
+                    name = 'Tablet Ownership Status',
+                    labels = 'No Tablet') +
+  labs(x=NULL, y=NULL, title = 'Breakdown of Households Missing \"Tablet Counts\"') +
+  theme(axis.line = element_blank())
+```
+
+For our final variable missing several values, we draw a relationship the ownership status of the house; based on the distribution breakdown of 86.1% ownership, 11.5% assigned/borrowed, and only 2.35% "precarious", we can logically determine that if the household is owned, that individual will not have any rent payment obligations. Therefore, we can impute missing values of those that own a house with 0's (i.e., no payment), and the remaining minority can safely be imputed with a median value.  
+
+```{r eval=FALSE}
+filter(poverty, is.na(v2a1)) %>%
+  select(starts_with('tipovivi')) %>%
+  rownames_to_column('id') %>%
+  gather(Tipo, Flag, tipovivi1:tipovivi5) %>%
+  group_by(id) %>%
+  slice(which.max(Flag)) %>%
+  group_by(Tipo) %>%
+  tally() %>%
+  mutate(p = n/sum(n))
+```
+
+
+```{r include=FALSE}
+# first tidy data into groups of house ownership, then get counts and plot
+filter(poverty, is.na(v2a1)) %>%
+  select(starts_with('tipovivi')) %>%
+  rownames_to_column('id') %>%
+  gather(Tipo, Flag, tipovivi1:tipovivi5) %>%
+  group_by(id) %>%
+  slice(which.max(Flag)) %>%
+  ggplot(aes(x = '', fill = Tipo)) +
+    geom_bar(width = 1) +
+    coord_polar(theta = 'y', start = pi / 3) +
+    scale_fill_brewer(palette = 'Blues', direction = -1,
+                      name = 'Home Ownership Status',
+                      labels = c('Own house (fully paid)',
+                                 'Precarious',
+                                 'Assigned/borrowed')) +
+    theme(axis.title.x = element_blank(),
+          axis.title.y = element_blank()) +
+    ggtitle('Missing \"Rent Payments\"', subtitle = 'Household Breakdown')
+```
+
+Finally, we note that `SQBmeaned` is simply the squared term of `meaneduc`, which is why they have the same number of missing values; since we are only missing five observations in each feature, we can simply impute with the median value. We save all imputations for a later step to save on computation time, but this marks the end of dealing with any missing or erroneous values in our dataset.  
+
+##### Reverse Engineering
+
+Several variables have already been encoded as binary, and are essentially broken-down answers to larger questions being asked. In order to completely extract the original information, we will need to do some reverse-engineering to get a few of the variables back to factors with multiple levels. Going through variables individually, we can manually pick out groups of variables where their names and descriptions give an indication that they could be linked together. We create a list of these feature names so we can utilize the power of `tidyverse`, and not have to re-code all of these factors individually. The list consists of a mixture of both nominal and ordinal variables, and the specific nature of each will be dealt with during our feature engineering stage.  
+
+```{r}
+# features to be reverse-engineered
+var_list = c(
+  "pared", # wall material (brick/socket/cement/waste material/wood/zink/natural/other)
+  "piso", # floor material (mosaic,ceramic/cement/other/natural/none/wood)
+  "techo", # roof material (metal foil/fiber cement/natural fibers/other)
+  "abasta", # water (inside/outside/none)
+  "sanitario", # toilet (none/sewer/septic/black hole/other)
+  "energcocinar", # cooking energy (none/electricity/gas/wood charcoal)
+  "elimbasu", # trash disposal (tanker truck/buried/burning/unoccupied space/water/other)
+  "epared", # walls (bad/regular/good)
+  "etecho", # roof (bad/regular/good)
+  "eviv", # floor (bad/regular/good)
+  "estadocivil", # relationship (NA/dating/married/divorced/separated/widow/single)
+  "parentesco", # family (head/spouse/son/stepson/sonlaw/grandson/father/fatherlaw/brother/brotherlaw/othrfam/othrnon-fam)
+  "instlevel", # education (none/inc1st/1st/inc acad2nd/acad2nd/inc tech2nd/tech2nd/undergrad/postgrad)
+  "tipovivi", # house ownership (fully paid/own&paying/rented/precarious/assigned,borrowed)
+  "lugar", # region (central/chorotega/pacifico central/brunca/huetar atlantica/huetar norte)
+  "area" # zone (urban/rural)
+)
+```
+
+```{r}
+decode <- function(data, features){
+  # input: data -- original dataset with "one-hot" encoded features
+  #        features -- beginning of names of features to be reverse-engineered
+  # output: data -- dataset with binary re-leveled as factors
+  
+  for (i in 1:length(features)){
+    # do this for all features in our list
+    new_col <- ncol(data)+1 # update data dimension
+    cur_var <- features[i] # grab features 1 by 1
+    match_vars <- select(data, starts_with(cur_var))
+    
+    # names(max.col()) to get the column name where the '1' is stored --> column of "column names"
+    data[,new_col] <- factor(names(match_vars)[max.col(match_vars, ties.method = 'first')], ordered = FALSE) # set as last column
+    names(data)[new_col] <- paste0('fct_',cur_var) # rename the new variable as the base name
+    
+    data <- select(data, -starts_with(cur_var)) # drop old columns EXCEPT the one we just made
+  }
+  
+  # df with binary encoded as factors
+  return(data)
+}
+
+# factored data -- now we need to figure out how to level some factors
+poverty_fct <- decode(poverty, var_list)
+```
+
+Our method for concatenating binary indicator columns to a single factor-level feature was quite tedious; in order make the process more efficient for several variables, we pass our list of binary features into a "decoder" function that will output a factored dataset. This is our first step in dimensionality reduction, and is quite successful considering we have already dropped `r ncol(poverty) - ncol(poverty_fct)` columns from the original dataset.  
+
+##### Primary Correlations
+
+Before proceeding with feature engineering, we first seek to determine collinearity among variates, which could thus be susceptible to combination or modification. Figure 2 display correlations among our numerical data, clustered by the first principal component to ease analysis. Darker colors indicate stronger collinearity; ignoring the diagonal (which are obviously correlated with each other), we clearly see several clusters that are commonly relating to features at the individual level, including the breakdown of age groups in the house (`r4_`, indicating children, adults, and elderly, for each gender), the counts of people in the house (`hogar_`, indicating the same thing as `r4_`), as well as specific demographic information such as age, gender, education level, and the size of each household. Further, we observe nearly one-to-one correlations of `SQB_` features, which make sense considering they are simply the squared terms of their respective metrics. In the end, we will want to remove as much collinearity as possible to improve our model; however, before "throwing out" any variates, we evaluate those apparently related on an individual basis.  
+
+```{r}
+# cluster by first principal component order --> good to show groups of high correlations
+corrplot(poverty_fct %>% # create correlation matrix with numeric columns
+           select_if(is.numeric) %>%
+           select(-c(v2a1, v18q1, rez_esc)) %>% # drop cols with a lot of NA's
+           replace(., is.na(.), 0) %>% # temporarily impute with 0's
+           cor(), order = 'FPC', tl.cex=0.5)
+```
+
+**Figure 2:** Correlations of numeric data prior to feature engineering.
+
+##### Feature Engineering
+
+```{r}
+pcorr <- poverty_fct %>%
+  # when grouping by house ID, some targets don't match --> use the one indicated by 'parentesco1'
+  select(-c(Target)) %>% # remove old target
+  # subquery the true label, then add this back to the data
+  inner_join(poverty_fct %>%
+               filter(fct_parentesco == 'parentesco1') %>%
+               select(idhogar, Target) %>%
+               group_by(idhogar), by = 'idhogar') %>%
+  # now do the feature engineering
+  mutate(
+    # recode a few variables
+    Target = as.factor(Target),
+    crowded_room = ifelse(hacapo == 1 | hacdor == 1, 1, 0),
+    gender = male,
+    # (under 19 + over 64) / (between 19 and 64)
+    dependency = ifelse(dependency == 'no', 0,
+                        ifelse(dependency == 'yes', 1, as.numeric(as.character(dependency)))),
+    num_tablets = ifelse(v18q == 0, 0, v18q1),
+    head_male_edu = ifelse(edjefe == 'no', 0,
+                           ifelse(edjefe == 'yes', 1, as.numeric(as.character(edjefe)))),
+    head_female_edu = ifelse(edjefa == 'no', 0,
+                             ifelse(edjefa == 'yes', 1, as.numeric(as.character(edjefa)))),
+    # area has 2 levels, so it can just be a flag
+    area = as.numeric(fct_area),
+    edu_level = as.numeric(fct_instlevel),
+    
+    # > 0 if more people than in the family are in the house
+    extra_people = tamviv - hhsize,
+    
+    # figure out how to deal with 'years behind in school'
+    rez_esc = ifelse(is.na(rez_esc) & (age < 7 | age > 19), 0,
+                     ifelse(!is.na(rez_esc), rez_esc, median(rez_esc))),
+    school_flag = as.numeric(is.na(rez_esc)),
+    
+    # combine tech --> maybe get this per-capita as well?
+    technology = num_tablets + computer + television + qmobilephone,
+    
+    # people counts/proportions
+    prop_y12 = (r4h1 + r4m1) / r4t3, # (males under 12 + females under 12) / (total ppl in house)
+    male_prop = r4h3 / r4t3, # (total males) / (total females)
+    
+    # missing rent payments
+    no_rent_flag = as.numeric(is.na(v2a1)),
+    rent = ifelse(is.na(v2a1) & fct_tipovivi == 'tipovivi1', 0,
+                  ifelse(!is.na(v2a1), v2a1, median(v2a1, na.rm = TRUE))),
+    
+    # convert to 'ordinal' variables
+    wall = as.numeric(fct_epared),
+    roof = as.numeric(fct_etecho),
+    floor = as.numeric(fct_eviv),
+    structure = wall + roof + floor, # general idea of house, max = 9
+    
+    # house conditions
+    toilet = ifelse(fct_sanitario == 'sanitario1', 0, 1),
+    cook = ifelse(fct_energcocinar == 'energcocinar1', 0, 1),
+    #waste = ifelse(fct_elimbasu == 'elimbasu4', 0, 1),
+    electric = ifelse(noelec == 1, 0, 1),
+    water = ifelse(fct_abasta == 'abastaguano', 0, 1),
+    floor_flag = ifelse(fct_piso == 'pisonotiene', 0, 1),
+    condition_flag = toilet + cook + electric + water + floor_flag + cielorazo + refrig,
+    
+    # just merge male and female -- already have a flag for gender
+    head_edu = head_male_edu + head_female_edu,
+    
+    marital_status = ifelse(fct_estadocivil == 'estadocivil1', 0,
+                            ifelse(fct_estadocivil != 'estadocivil3', 1, 2)),
+    
+    meaneduc = ifelse(is.na(meaneduc), median(meaneduc, na.rm = TRUE), meaneduc), # impute missings with median
+    
+    househead = ifelse(fct_parentesco == 'parentesco1', 1, 0)
+    
+  ) %>%
+  select(-c(
+    edjefe, edjefa, # not useful (weird coding and duplicate responses)
+    v2a1, v18q, v18q1, rez_esc, # high number of missing values
+    agesq, tamviv, tamhog, hhsize, # duplicate house counts
+    escolari,
+    # remove some variables we used above
+    hacapo, hacdor,
+    male, female,
+    v18q, computer, television, mobilephone, qmobilephone,
+    hogar_nin, hogar_adul, hogar_mayor,
+    fct_epared, fct_etecho, fct_eviv, fct_abasta, fct_area, fct_instlevel, fct_estadocivil, fct_parentesco,
+    noelec, coopele, public, planpri, # electricity
+    wall, floor, roof,
+    refrig, v14a, cielorazo,
+    head_male_edu, head_female_edu,
+    # remove extra factors that won't be much benefit
+    fct_pared, fct_piso, fct_techo, fct_sanitario, fct_energcocinar, fct_elimbasu, fct_tipovivi
+  )) %>%
+  select(-starts_with('r4')) %>%
+  select(-starts_with('SQB'))
+```
+
+Considering information from the preceding exploratory analysis, we now conduct an initial phase of feature engineering; this will serve a few purposes, including (i) increased interpretability by re-coding variables, (ii) dimensionality reduction by removing duplicate information as indicated by our correlation analysis, and (iii) potentially adding *new* information by utilizing aggregate functions and combinations of variates to extract additional features. Individual steps were conducted as follows:  
+
+* Attain true poverty level label (as indicated by the head of the house)
+* Create boolean flag for "overcrowding" (either by room or bedroom)
+* Concatenate genders (male/female) and living area (rural/urban) into booleans
+* Cast "yes"/"no" responses to 1/0's in dependency
+* Tablet count based on ownership and count features
+* Convert education level (primary, secondary, etc.) to ordinal
+* Find amount of extra people living in a house (difference between total people in house and family size)
+* Created a year behind in school for the entire house
+* Deal with missing values in:
+  + Rent payments
+  + Mean education level
+* Count the amount of tablets, computers, televisions, and cellphones owned by an individual and per person in the household
+* Find proportion of males and kids under 12 years old in the house
+* Aggregate house structure based on ordinal wall, roof, and floor variables
+* Aggregate house conditions based on ownership of a toilet, cooking energy supply, electricity, water, floor, ceiling, and fridge
+* Concatenate household head education from head male/female education
+* Create ordinal relationship status in terms of being too young, single, or in a relationship
+* Keep one highly collinear feature (to summarize the cluster of them)
+* Removed residual features that were used in creating others (would otherwise induce collinearity)
+
+```{r}
+poverty_fct <- poverty_fct %>%
+  group_by(idhogar) %>%
+  mutate(YearBehindHouse = sum(rez_esc, na.rm = T))
+```
+
+```{r}
+poverty_mod <- poverty_fct %>%
+  # when grouping by house ID, some targets don't match --> use the one indicated by 'parentesco1'
+  select(-c(Target)) %>% # remove old target
+  # subquery the true label, then add this back to the data
+  inner_join(poverty_fct %>%
+               filter(fct_parentesco == 'parentesco1') %>%
+               select(idhogar, Target) %>%
+               group_by(idhogar), by = 'idhogar') %>%
+  # now do the feature engineering
+  mutate(
+    # recode a few variables
+    Target = as.factor(Target),
+    crowded_room = ifelse(hacapo == 1 | hacdor == 1, 1, 0),
+    gender = male,
+    # (under 19 + over 64) / (between 19 and 64)
+    dependency = ifelse(dependency == 'no', 0, ifelse(dependency == 'yes', 1, as.numeric(as.character(dependency)))),
+    num_tablets = ifelse(v18q == 0, 0, v18q1),
+    head_male_edu = ifelse(edjefe == 'no', 0, ifelse(edjefe == 'yes', 1, as.numeric(as.character(edjefe)))),
+    head_female_edu = ifelse(edjefa == 'no', 0, ifelse(edjefa == 'yes', 1, as.numeric(as.character(edjefa)))),
+    # area has 2 levels, so it can just be a flag
+    area = as.numeric(fct_area),
+    edu_level = as.numeric(fct_instlevel),
+    
+    # > 0 if more people than in the family are in the house
+    extra_people = tamviv - hhsize,
+    
+    # figure out how to deal with 'years behind in school'
+    rez_esc = ifelse(is.na(rez_esc) & (age < 7 | age > 19), 0, ifelse(!is.na(rez_esc), rez_esc, median(rez_esc))),
+    school_flag = as.numeric(is.na(rez_esc)),
+    
+    # combine tech
+    technology = num_tablets + computer + television + mobilephone,
+    techPerPerson = technology / hogar_total,
+    
+    # people counts/proportions
+    prop_y12 = (r4h1 + r4m1) / r4t3, # (males under 12 + females under 12) / (total ppl in house)
+    male_prop = r4h3 / r4t3, # (total males) / (total females)
+    
+    # missing rent payments
+    no_rent_flag = as.numeric(is.na(v2a1)),
+    rent = ifelse(is.na(v2a1) & fct_tipovivi == 'tipovivi1', 0, ifelse(!is.na(v2a1), v2a1, median(v2a1, na.rm = TRUE))),
+    
+    # convert to 'ordinal' variables
+    wall = as.numeric(fct_epared),
+    roof = as.numeric(fct_etecho),
+    floor = as.numeric(fct_eviv),
+    structure = wall + roof + floor, # general idea of house, max = 3
+    
+    # house conditions
+    toilet = ifelse(fct_sanitario == 'sanitario1' | fct_sanitario == "sanitario5", 0, 1),  # no toilet or outhouse
+    cook = ifelse(fct_energcocinar == 'energcocinar1' | fct_energcocinar == "energcocinar4", 0, 1), # none or wood/coal
+    #waste = ifelse(fct_elimbasu == 'elimbasu4', 0, 1),
+    electric = ifelse(noelec == 1, 0, 1),
+    water = ifelse(fct_abasta == 'abastaguano', 0, 1),
+    floor_flag = ifelse(fct_piso == 'pisonotiene' | fct_piso == "pisonatur", 0, 1),  # no floor or natural floor
+    condition_flag = toilet + cook + electric + water + floor_flag + cielorazo + refrig,
+    
+    head_edu = head_female_edu + head_male_edu,
+    
+    meaneduc = ifelse(is.na(meaneduc), median(meaneduc, na.rm = TRUE), meaneduc) # impute missings with avg
+    
+  ) %>%
+  select(-c(
+    edjefe, edjefa, # not useful (weird coding and duplicate responses)
+    v2a1, v18q, v18q1, rez_esc, # high number of missing values
+    agesq, tamviv, tamhog, hhsize, # duplicate house counts
+    escolari,
+    # remove some variables we used above
+    hacapo, hacdor,
+    male, female,
+    v18q, computer, television, mobilephone,
+    hogar_nin, hogar_adul, hogar_mayor,
+    fct_epared, fct_etecho, fct_eviv, fct_abasta, fct_area, fct_instlevel,
+    noelec, coopele, public, planpri, # electricity
+    wall, floor, roof, head_male_edu, head_female_edu,
+    refrig, v14a, cielorazo
+  )) %>%
+  select(-starts_with('r4')) %>%
+  select(-starts_with('SQB'))
+```
+
+##### Factor Analysis
+
+Following feature engineering and aggregating data into (ideally) more useful information, we re-visit checking correlations in an effort to perform factor analysis on our new dataset; now we have effectively reduced multicollinearity, and only retain high correlations between a few variables. Following the data reduction of `r ncol(poverty_fct) - ncol(poverty_mod)` features, we can now check the potential of using factor analysis.  
+
+```{r include=FALSE}
+# figure 3
+# get correlation matrix and plot
+corrplot(poverty_corr <- pcorr %>%
+           select_if(is.numeric) %>%
+           cor(), order = 'FPC', tl.cex = 0.8)
+```
+
+Bartlett's test for sphericity is a formal way that we could determine if factor analysis is appropriate for our dataset. The null hypothesis in this test is that the observed correlation is the identity matrix; essentially, since this test yields a p-value of `r cortest.bartlett(poverty_corr, n = nrow(pcorr))$p.value`, we have evidence that the population correlations among pairs of variables are not all zero, thus our correlation matrix is not an identity matrix and factor analysis may be useful.  
+
+We can further our test by determining the KMO measure of sampling accuracy (MSA), which accounts for the patterns between variables in addition to the correlations. We aim to attain values over a threshold of 0.7, which indicate that factor analysis should yield distinct and reliable factors. Our full data returns an MSA value of 0.63, which is slightly low for our acceptability. In an iterative fashion, we sequentially remove individual features with the lowest MSA values less than 0.5 in an attempt to boost overall MSA. By taking out `extra_people`, `gender`, and `school_flag`, we attain an overall MSA of 0.69, which means it is acceptable to proceed with factor analysis.  
+
+```{r eval=FALSE}
+rm(poverty_corr)
+KMO(pcorr %>%
+      select_if(is.numeric) %>%
+      select(-c(extra_people, gender, school_flag)) %>% # sequentially removing MSA items < 0.5
+      cor())
+```
+
+Now, we need to apply techniques that suggest the optimal number of factors to extract from our data. Using the same subset of data that scored highest in MSA, we can now examine a scree plot and use Kaiser's rule to extract factors with a latent root greater than 1; we find the threshold at this value to cut through component 9, indicating that we should retain either 8 or 9 components in proceeding with our factor analysis.  
+
+```{r eval=FALSE}
+# Use Kaiser's rule to extract factors with a latent root greater than 1
+plot(princomp(pcorr %>%
+                select_if(is.numeric) %>%
+                select(-c(extra_people, gender, school_flag)),
+              cor = TRUE),
+     type = 'lines'); abline(h = 1, lty = 2, col = 'red') # add cutoff line at variance = 1
+```
+
+We choose 9 components because yields a better fit in sorting features during applying eigen value decomposition. We tested utilizing only 8 components in an effort to minimize complexity, but the results were not as desirable. Now that we know how many factors to extract that will be representative of the common variance among the observed variables, we can apply PCA with ordered importances and visualize clusters of features that make up each component. Here, we are looking for each factor to have high loadings on only a few variables, and each variable to only have a single loading for one factor, such that they don't contribute information to multiple factors. Additionally, we can apply "varimax" rotation to provide a more understandable interpretation of the PCA solution by yielding factors with loadings whose squares are as "spread out" as possible.  
+
+For a successful factor analysis, we desire high communality values ("h2"), which is the proportion of common or shared variance within a variable. Looking for high values for all variables, we sequentially remove features (`dis`, `area`, and `num_tablets`) with the lowest communality less than 0.5 *and* are not incorporated into a main factor. Our result is 9 factors with 23 out of 24 communalities greater than 0.5, one stand-alone variable (`prop_y12`) with communality 0.58, and only one variable (`hogar_total`) with loadings on more than one factor. We deem this to be an acceptable factor analysis, and save the scores with new feature names that are representative of the variables in each factor.  
+
+```{r}
+fa <- principal(pcorr %>%
+                  select_if(is.numeric) %>%
+                  select(-c(extra_people, gender, school_flag,
+                            dis, area, num_tablets)), # drop features with low h2
+                nfactors = 9, rotate = 'varimax')
+```
+
+```{r eval=FALSE}
+print.psych(fa, cut = 0.5, sort = TRUE)
+```
+
+```{r}
+poverty_fa <- cbind(fa$scores, select(pcorr, c(househead, Target))); rm(fa) # save scores and re-attach labels
+# name columns appropriately
+colnames(poverty_fa) <- c('size','education','househead','capacity','rent','house',
+                          'utilities','family','appliances','head_flag','Target')
+```
+
+Our "new" dataset retains all `r nrow(poverty_fa)` observations, but shrinks dimensionality to `r ncol(poverty_fa)-2` features. With the understanding that the factor analysis was meant to explain the variance within our data, we can visualize the effect of the new factor distributions on our target poverty classes with box-plots, as is shown in figure 3. Although means do not appear to be significantly different for this component, we see several extreme values on the upper ends of households further removed from poverty; this value spread could prove to be important in distinguishing between groups in our modeling phase.  
+
+```{r}
+ggplot(poverty_fa, aes(Target, size)) +
+  geom_boxplot(fill = 'dodgerblue3', alpha = 0.7) +
+  labs(y = 'Size (Component 1)\n', title = 'Variance of \"Size\"', subtitle = 'Constructed with: bedrooms, rooms, technology')
+```
+
+**Figure 3:** Variance explained by first component in factor analysis.
+
+```{r include=FALSE}
+# not very informative...
+poverty_fa %>%
+  mutate(ExtremeTarget = as.factor(ifelse(Target == 1 | Target == 2, 0, 1))) %>%
+  ggplot(aes(size, education, color = ExtremeTarget)) +
+    geom_point(size = 0.3, alpha = 0.5) +
+    geom_hline(yintercept = 0, color = 'firebrick', alpha = 0.8) +
+    geom_vline(xintercept = 0, color = 'firebrick', alpha = 0.8) +
+    geom_encircle(aes(size, education, fill = ExtremeTarget), alpha = 0.1, expand = 0.0001) +
+    ggtitle('Poverty Level Clustering', subtitle = 'Factors 1 and 2')
+```
+
+# Statistical Model
+
+We consider two distinct methodologies for building and evaluating models. The primary revolves around the resultant dataset from factor analysis, and the other utilizes the original set from feature engineering. In each, we focus on classifying household poverty based on the retained features. Each set contains an indicator for the household head, as these are the individuals that the classifications will revolve around. We noted before the class imbalance between the four distinguished poverty levels; because it will be extremely important to evaluate our model effectively and thus focus on supplying aid to those living in extreme poverty, we will need a proper predictive assessment. Model scoring is discussed before model building, as it will play an important role in effectively choosing the best model.  
+
+##### Accuracy Metrics
+
+With several statistical and machine learning algorithms favoring majority classes due to "default" classifications, we need to evaluate our model based on metrics that will properly assess failure and success rates. For binary classification problems, a common assessment of accuracy is the F-measure, or $F_1$ Score, and is calculated as:  
+
+$F_1 = \frac{2}{\frac{1}{recall} + \frac{1}{precision}} = 2*\frac{precision * recall}{precision + recall}$.  
+
+This metric is essentially the harmonic mean of precision and recall. Since we are dealing with a mulch-class classification problem, we will need to average the $F_1$ scores over the four classes to attain what is known as the Macro $F_1$ Score:  
+
+$Macro F1 = \frac{F1_1 + F2_1 + F1_3 + F1_4}{4}$.  
+
+Another highly appraised metric for imbalanced datasets is area under the curve (AUC); for multiple classes, we can easily attain an aggregate value by taking the mean AUC computed separately for each class. ROC curves are reliable because of their ability to balance TPR and FPR, and proper analysis provides an essential tool to select possibly optimal models and to discard sub-optimal ones *independently* from the class distribution.  
+
+Additionally, we evaluated models based on their classification success index as suggested by [Labatut and Cherifi, 2011](https://hal.archives-ouvertes.fr/hal-00611319/document), which is a class-specific symmetric measure that can then be averaged for the number of classes present, and is calculated as $PPV_i + TPR_i - 1$; the terms $1 - PPV_i$ and $1 - TPR_i$ correspond to the proportions of type I and II errors for the considered class, respectively. These values are scaled from -1 (both errors are maximal) to 1 (both errors are minimal).  
+
+Although we looked into other metrics such as the false omission rate and Jaccard's Index, which is linearly related to the $F_1$ score, we focused on the previously mentioned due to their precision in model diagnostics and consistency with each other. For comparison purposes, we compare these measures to the standard accuracy measure that is more beneficial in situations where we have balanced cases across all classes.  
+
+```{r}
+model_scores <- function(model, test_data, y){
+  # input: model -- multinomial logistic regression model
+  #        test_data -- data to test the model on
+  #        y -- response variable of test data
+  # output: data of evaluation metrics
+  
+  # get predicted values from model fit
+  preds <- model %>% predict(test_data, type = 'raw')
+  # overall model accuracy -- careful with class imbalances!
+  
+  cm <- caret::confusionMatrix(preds, y, positive = 'yes')
+  
+  # general accuracy
+  cv <- cm$overall[1]
+  
+  # area under the curve
+  roc <- multiclass.roc(y, as.numeric(preds))$auc[1]
+  
+  # Macro F1
+  weighted_f1 <- cm$byClass[25:28]; weighted_f1 <- mean(ifelse(is.na(weighted_f1), 0, weighted_f1))
+  
+  # Balanced Accuracy
+  balanced_acc <- cm$byClass[41:44]; balanced_acc <- mean(ifelse(is.na(balanced_acc), 0, balanced_acc))
+  
+  # Jaccard (essentially a linear combination of Macro F1)
+  JCC = weighted_f1 / (2 - weighted_f1)
+  
+  # individual classification success index = PPV + TPR - 1 = PPV - sensitivity - 1
+  ppv = cm$byClass[9:12]; ppv <- mean(ifelse(is.na(ppv), 0, ppv))
+  tpr = cm$byClass[1:4]; tpr <- mean(ifelse(is.na(tpr), 0, tpr))
+  ICSI = ppv + tpr - 1
+  
+  false_omit = cm$byClass[13:16]; false_omit = 1 - mean(ifelse(is.na(false_omit), 0, false_omit))
+  
+  results <- cbind.data.frame(cv, roc, weighted_f1, balanced_acc, JCC, ICSI, false_omit)
+  return(results)
+}
+```
+
+##### Data Initialization
+
+To ensure confidence prior to implementation, the data we have available to us should be partitioned such that we can both train a model in a supervised learning technique, then diagnose model fit on data the model has not yet seen. To do this, we split our data (for each modeling method) into 75% training, and 25% cross-validation. The process is done through random sampling based on a set seed (for replicable results).  
+
+```{r}
+train_test_split <- function(data, split_size = 0.75, seed = 3297){
+  # inputs:
+    # data -- data set to split
+    # split_size -- proportion to keep in training set
+  # output:
+    # list of a train and test set
+  obs <- nrow(data)
+  sample_size <- floor(split_size * obs) # take % for training, leave rest for test
+  set.seed(seed); train_idx <- sample(seq_len(obs), size = sample_size)
+  
+  train <- data[train_idx,]; test <- data[-train_idx,]
+  
+  return(list(train = train, test = test))
+}
+```
+
+```{r}
+# data for modeling method 2
+data.split <- train_test_split(filter(poverty_mod, fct_parentesco == 'parentesco1'))
+train <- data.split$train; cv <- data.split$test
+```
+
+In our problem, the imbalance of frequencies of the observed cases might have a significant negative impact on model fitting. Our first modeling method implements a technique for resolving such a class imbalance is to subsample the training data in a manner that mitigates the issues. Examples of sampling methods for this purpose are down-sampling (randomly subset all the classes in the training set so that their class frequencies match the least prevalent class), up-sampling (randomly sample, with replacement, the minority class to be the same size as the majority class), and hybrid methods (down-sample the majority class and synthesize new data points in the minority class). We create new training sets with each of these methods to fit models and evaluate performance on the cross-validation sets, which are not artificially balanced so they remain representative of what a model would need to evaluate in "the wild".  
+
+The two hybrid methods we implement include the adaptive synthetic (ADASYN) algorithm and Gaussian Noise. ADASYN is based on the idea of adaptively generating minority data samples according to their distributions using the Euclidean distance calculation in the KNN algorithm, without making assumptions about the underlying distribution of the data. On the other hand, Gaussian Noise combines both the generation of new synthetic samples with the introduction of a small perturbation on existing samples through following a normal distribution, while undersampling examples until the classes are balanced. We choose to implement these two algorithms because of their adaptivity with multiclass problems.  
+
+```{r}
+# Factor analysis data
+fa.split <- train_test_split(filter(poverty_fa, head_flag == 1))
+fa.train <- select(fa.split$train, -head_flag); fa.cv <- select(fa.split$test, -head_flag); rm(fa.split)
+
+# Original data
+o.split <- train_test_split(filter(pcorr, househead == 1))
+o.train <- select(o.split$train, -c(Id, idhogar, househead)); o.cv <- select(o.split$test, -c(Id, idhogar, househead)); rm(o.split)
+
+### SUBSAMPLING ###
+
+# oversample
+fa.over <- upSample(x=fa.train[,-ncol(fa.train)], y=fa.train$Target, yname='Target')
+o.over <- upSample(x=o.train[,-ncol(o.train)], y=o.train$Target, yname='Target')
+
+# undersample
+fa.under <- downSample(x=fa.train[,-ncol(fa.train)], y=fa.train$Target, yname='Target')
+o.under <- downSample(x=o.train[,-ncol(o.train)], y=o.train$Target, yname='Target')
+
+# SMOTE
+fa.smote <- AdasynClassif(Target ~ ., fa.train) # beta=1 (full balance); k=5 (nearest neighbors)
+
+# over/undersampling
+fa.both <- GaussNoiseClassif(Target ~ ., fa.train)
+```
+
+In observing data divisions from subsampling results on the training classes, we note (i) that the proportions for each class in the training split remain approximately the same, and (ii) that our sampling techniques have various effects on the total number of observations in each training set (as expected). ADAYSN resulted in approximately the same number of observations as oversampling, while Gaussian Noise was close to the same number as our original training data.  
+
+##### Feature Selection
+
+Even though we have already subsetted our data to 9 parameters, it is beneficial to check if there exist any potentially more optimal solutions with fewer parameters; to initially gauge a few of our training datasets, we implement recursive feature elimination (RFE) with 5 repeats of 10-fold cross-validation. The model works by initially training on all parameters, calculating model performance based on Kappa statistic, calculating variable importance for that model fit, then re-training the model on a subset of the n-best features for the previous model; by keeping track of performance on each subset of specified parameters, the algorithm then returns the appropriate number of features to retain for optimal fit. Results from this process for each dataset are outlined in table 1.  
+
+Dataset | No. Parameters | Optimal Subset | Top-5 Features  
+--- | --- | --- | ---   
+Original | 33 | 5 | dependency, meaneduc, prop_y12, technology, head_edu  
+Factor Analysis | 9 | 8 | education, family, capacity, house, utilities  
+ADASYN | 9 | 9 | education, househead, rent, utilities, family  
+Gaussian Noise | 9 | 8 | education, family, capacity, size, househead  
+
+**Table 1:** Recursive feature elimination results.
+
+Although we only attain moderate improvements on the datasets that have already been subsetted by factor analysis, we still see the potential of dropping to 8 parameters in two of three scenarios. However, because we are only given information about the top 5 important features, we can look to cross-reference these parameters between RFE results; in doing so, we see that the only parameter out of our original 9 that did *not* make a top-5 cut is `appliances`. From our full dataset, we have an *absolute* maximal accuracy at 31 parameters, but a local maximum at 5 (with sacrificing $< 1$% accuracy); because we want to reduce model complexity, we will evaluate the performance of this subset as well.  
+
+```{r eval=FALSE}
+### recursive feature elimination ###
+
+# set up parallel computation
+cl <- makeCluster(detectCores(), type = 'PSOCK'); registerDoParallel(cl)
+
+rf_ctrl = rfeControl(functions = rfFuncs, method = 'repeatedcv', number = 10, repeats = 5, verbose = FALSE)
+y <- 'Target'
+
+# factor analysis data
+x.fa <- fa.train[,names(fa.train)[!names(fa.train) %in% y]]; set.seed(3297)
+fa.rf <- rfe(x.fa, fa.train[,y], sizes = c(1:10), rfeControl = rf_ctrl)
+plot(fa.rf, type = c('g','o')); print(fa.rf) # keep 8: education, family, capacity, house, utilities --> 65.51%
+
+# original data
+x.o <- o.train[,names(o.train)[!names(o.train) %in% y]]; set.seed(3297)
+o.rf <- rfe(x.o, o.train[,y], sizes = c(1:10, 15, 20), rfeControl = rf_ctrl)
+plot(o.rf, type = c('g','o')); print(o.rf) # keep 31: dependency, meaneduc, prop_y12, technology, head_edu --> 67.65%
+
+# SMOTE data
+x.smote <- fa.smote[,names(fa.smote)[!names(fa.smote) %in% y]]; set.seed(3297)
+smote.rf <- rfe(x.smote, fa.smote[,y], sizes = c(1:10), rfeControl = rf_ctrl)
+plot(smote.rf, type = c('g','o')); print(smote.rf) # keep 9: education, househead, rent, utilities, family --> 68.26%
+
+# over/under data
+x.both <- fa.both[,names(fa.both)[!names(fa.both) %in% y]]; set.seed(3297)
+both.rf <- rfe(x.both, fa.both[,y], sizes = c(1:10), rfeControl = rf_ctrl)
+plot(both.rf, type = c('g','o')); print(both.rf) # keep 8: education, family, capacity, size, househead --> 73.39%
+
+stopCluster(cl); rm(cl, rf_ctrl, y, x.fa, x.o, x.smote, x.both)
+```
+
+### Method 1 - Factor Analysis
+
+Our first attempt at modeling consisted of fitting multinomial log-linear models with 10 repeats of 10-fold cross-validation on all training sets, including our original data, the resulting factor analysis data, and four subsampling techniques conducted on the factor analysis data. To ensure model convergence, we choose to train each model for 1,000 iterations. To attain baseline scores, each model is fit on a full dataset; this method will help us evaluate which dataset or subsampling technique achieves the best results. Additionally, we fit models on the RFE-recommended subsets of data; again, we fit these models to evaluate the performance in comparison to their respective models fit with all features.  
+
+```{r}
+# set up parallel computation
+cl <- makeCluster(detectCores(), type = 'PSOCK'); registerDoParallel(cl); set.seed(3297)
+
+max_it = 1000
+t_ctrl <- trainControl(method = 'repeatedcv', number = 10, repeats = 10, summaryFunction = multiClassSummary)
+
+# Factor analysis data --> Education, family, capacity, size, househead, house, utilities, rent (take out appliances)
+fa.full <- train(Target ~ ., data = fa.train, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+fa.sub <- train(Target ~ . -appliances, data = fa.train, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+
+# Original data --> dependency, meaneduc, prop_y12, technology, head_edu
+o.full <- train(Target ~ ., data = o.train, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+o.sub <- train(Target ~ dependency + meaneduc + prop_y12 + technology + head_edu, data = o.train,
+               method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+
+### SUBSAMPLING MODELS ###
+
+# oversampling
+fa.full.o <- train(Target ~ ., data = fa.over, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+o.full.o <- train(Target ~ ., data = o.over, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+fa.sub.o <- train(Target ~ . -appliances, data = fa.over, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+
+# undersampling
+fa.full.u <- train(Target ~ ., data = fa.under, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+o.full.u <- train(Target ~ ., data = o.under, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+fa.sub.u <- train(Target ~ . -appliances, data = fa.under, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+
+# SMOTE (outside, then inside) --> RF suggests best performance with ALL vars
+fa.full.s <- train(Target ~ ., data = fa.smote, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+#fa.full.sin <- train(Target ~ ., data = fa.train, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl_ada)
+
+# both --> remove appliances (suggested from RF)
+fa.full.b <- train(Target ~ ., data = fa.both, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+#fa.full.bin <- train(Target ~ ., data = fa.train, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl_gaus)
+fa.sub.b <- train(Target ~ . -appliances, data = fa.both, method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl)
+#fa.sub.bin <- train(Target ~ . -appliances, data = fa.both,
+#                    method = 'multinom', maxit = max_it, trace = FALSE, trControl = t_ctrl_gaus)
+
+# compile models
+models <- list(`Full (FA)`=fa.full, `Subset (FA)`=fa.sub, # train data (1,2)
+               `Full (Orig.)`=o.full, `Subset (Orig.)`=o.sub, # train data (3,4)
+               `Full (FA Over.)`=fa.full.o, `Full (Orig. Over.)`=o.full.o, `Subset (FA Over.)`=fa.sub.o, # oversampling (5,6,7)
+               `Full (FA Under.)`=fa.full.u, `Full (Orig. Under)`=o.full.u, `Subset (FA Under.)`=fa.sub.u, # undersampling (8,9,10)
+               `Full (FA ADASYN)`=fa.full.s, # SMOTE (11)
+               `Full (FA Gaus.)`=fa.full.b, `Subset (FA Gaus.)`=fa.sub.b) # over/undersampling (12,13,14)
+
+# stop using parallel and clean up workspace
+stopCluster(cl); rm(cl, max_it, t_ctrl)
+```
+
+```{r eval=FALSE}
+# plot resampling results
+model.results <- resamples(models)
+
+for (stat in c('Accuracy', 'Kappa', 'Mean_Sensitivity', 'Mean_Specificity')){
+  print(bwplot(model.results, metric = stat))
+}
+
+rm(stat)
+```
+
+```{r}
+# models trained on factor analysis data
+fam <- c(1,2,5,7,8,10,11,12,13)
+fa.results <- lapply(models[fam], model_scores, fa.cv, fa.cv$Target)
+fa.results <- lapply(fa.results, as.vector); fa.results <- do.call('rbind', fa.results)
+
+# models trained on original data
+o.results <- lapply(models[-fam], model_scores, o.cv, o.cv$Target)
+o.results <- lapply(o.results, as.vector); o.results <- do.call('rbind', o.results)
+
+# record datasets used for each model
+data_set <- c('Factor Analysis','Factor Analysis','Up-Sampling','Up-Sampling',
+              'Down-Sampling','Down-Sampling','ADASYN','Gaussian Noise','Gaussian Noise',
+              'Original','Original','Up-Sampling','Down-Sampling')
+
+# combine results
+results <- rbind.data.frame(fa.results, o.results) %>% rownames_to_column('models') %>% cbind.data.frame(data_set)
+rm(fam, fa.results, o.results, data_set)
+```
+
+In a naive approach, we assess model fit by cross-validation accuracy for fits on same datasets and same variable subsets. What we find is that the full models fit on our original dataset (33 features) and factor analysis dataset (9 features) attain accuracies of 65.96%. The models fit on subsampled data perform significantly worse, around 55%. Confusion matrix results show us that the top-performing models for this metric actually heavily favor classifying households as "non-vulnerable"; because this is the weighted majority, models that simply assume all households to "non-vulnerable" will attain approximately `r 100*round(prop.table(table(fa.train$Target))[4], 4)`% accuracy. Keeping the goal in mind of delivering aid to those living in extreme poverty, we turn to another metric that could lead us to a more appropriate model implementation that will favor those groups.  
+
+```{r eval=FALSE}
+# figure 8
+ggplot(results, aes(reorder(models, cv), cv)) +
+  geom_point(aes(color = data_set), size = 2) +
+  geom_segment(aes(x=models, xend=models, y=0.5, yend=cv, color = data_set), size = 1.2) +
+  theme(axis.title.y = element_blank()) +
+  labs(title = 'Accuracy', subtitle = 'Cross-Validation', y = '\nAccuracy (%)') +
+  scale_color_discrete('Data Source') +
+  coord_flip()
+```
+
+As we mentioned in evaluating more appropriate model fit diagnostics in the case of imbalanced classes, we find that multi-class AUC, Kappa coefficient, Macro $F_1$ scores, and balanced accuracies all give similar results in terms of model rank. Looking specifically at Macro $F_1$ scores in figure 4, we see that full models fit on data from factor analysis, up-sampling, and Gaussian Noise all rank in the top 3, respectively. We also see the low scores from models fit on data without subsampling, giving indication that these are likely not very appropriate in assessing households as extreme poverty, which is where the focus of our model needs to be driven. Finally, we note the high performance of our model fit without `appliances` on our under-sampled data in relation to the model with all 9 parameters; because these metrics are reasonably close and we are in search of a simplified model, we can conduct a formal statistical test to determine if the reduction in parameters is reasonable.  
+
+```{r include=FALSE}
+ggplot(results, aes(reorder(models, roc), roc)) +
+  geom_point(aes(color = data_set), size = 2) +
+  geom_segment(aes(x=models, xend=models, y=.55, yend=roc, color = data_set), size = 1.2) +
+  theme(axis.title.y = element_blank()) +
+  labs(title = 'Multi-Class ROC Curve', y = 'AUC') +
+  scale_color_discrete('Data Source') +
+  coord_flip()
+```
+
+
+```{r}
+ggplot(results, aes(reorder(models, weighted_f1), weighted_f1)) +
+  geom_point(aes(color = data_set), size = 2) +
+  geom_segment(aes(x=models, xend=models, y=0.25, yend=weighted_f1, color = data_set), size = 1.2) +
+  theme(axis.title.y = element_blank()) +
+  labs(title = 'Macro F1 Score', subtitle = 'Weighted Averages for 4 Classes', y = 'Score') +
+  scale_color_discrete('Data Source') +
+  coord_flip()
+```
+
+**Figure 4:** Macro $F_1$ scores for all models fit.
+
+```{r include=FALSE}
+# best scoring metrics --> lower accuracy, but better at predicting level 1 (which is what we want)
+caret::confusionMatrix(fa.full.u %>% predict(fa.cv, type = 'raw'), fa.cv$Target, positive = 'yes')$table
+# compare to best scoring 'CV' --> predicts none in extreme poverty or class 3
+caret::confusionMatrix(fa.sub.u %>% predict(fa.cv, type = 'raw'), fa.cv$Target, positive = 'yes')$byClass %>% round(3)
+```
+
+```{r results='hide'}
+# re-write models (caret doesn't support ANOVA tests...)
+null <- multinom(Target ~ 1, fa.under) # intercept-only model
+sub <- multinom(Target ~ . -appliances, fa.under) # removed appliances
+full <- multinom(Target ~ ., fa.under) # full model with all predictors from factor analysis
+```
+
+```{r eval=FALSE}
+# first test fit of sub vs null --> p-value = 0 < 0.5, reject h0 and conclude our model fits
+anova(null, sub)
+
+# now test sub vs full --> p-value = .212 > 0.5, fail to reject h0 and conclude that adding `appliances` does not add information
+anova(full, sub) # favor 'sub'
+```
+
+We first conduct a likelihood-ratio (LR) test on the intercept-only model and our subsetted model fit with 8 parameters; this yielded a $\chi^2$ value of 213.75, thus a p-value of $\approx 0$. Therefore, at the $\alpha = 0.05$ level of significance, we conclude that we have a significant evidence of a relationship between the features included in our model and target poverty level. Following this, we check to see if a full model with 9 features is more appropriate; here, we attain a $\chi^2$ value of 4.50 and a statistically insignificant p-value of 0.212, indicating that we should favor the simpler model fit with 8 features on the under-sampled factor analysis data, even though it corresponded to a slight decrease in AUC and Macro $F_1$. 
+
+### Method 2 - Multi-Step Model
+
+Looking back to some of the reverse-engineering variables from our original data, we were left with 40 potential predictor variables. In our secondary modeling technique, we classified 27 of these 40 as highly important to predicting the poverty level of the household. These variables and their descriptions can be found in the table below.  
+
+Variable | Description | Variable | Description | Variable | Description
+---------|-------------|----------|-------------|----------|-------------
+  `rooms` | Number of rooms in the house | `dis` | If the head of household has a disability | `techPerPerson` | Number of technology items per person in the house
+`hogar_total` | Number of people in the house | `dependecy` | Ratio of minors and senior citizens to adults in the house | `YearsBehindHouse` | Years behind in school for the whole house
+`meanedu` | Mean education level of the house | `bedrooms` | Number of bedrooms in the house | `head_edu` | Level of education for head of household
+`overcrowding` | Number of people per room | `qmobilephone` | Number of mobile phones | `floor_flag` | 0 if no floor or natural floor, 1 else
+  `age` | Age of the head of household | `crowded_room` | If there is overcrowding in the house | `water` | 1 if the house has water
+`gender` | Gender of the head of household | `area` | 1 for urban, 2 for rural | `electric` | 1 if the house has electricity
+`edu_level` | Education level | `school_flag` | 1 if not behind in school, 0 if behind in school | `cook` | 1 if no kitchen or wood/coal stove
+`technology` | Number of technology items in the house | `prop_y12` | Proportion of children below 12 in the house | `toilet` | 1 if no toilet or an outhouse
+`male_prop` | Proportion of males in the house | `no_rent_flag` | 1 if there is no rent listed for the house | `structure` | General idea of house, higher is better
+
+**Table 2:** Description of retained variables.
+
+```{r}
+# Variables
+vars <- c("Target", "rooms", "dis", "hogar_total", "dependency", "meanedu", "bedrooms", "overcrowding", "qmobilephone", "age", "crowded_room", "gender", "area", "edu_level", "school_flag", "technology", "prop_y12", "male_prop", "no_rent_flag", "structure", "toilet", "cook", "electric", "water", "floor_flag", "head_edu", "YearsBehindHouse", "techPerPerson")
+```
+
+##### "High-Low" Model
+
+We primarily constructed a multinomial model utilizing these features, which scored fairly high in predictive accuracy; however, we found that it over-predicted poverty levels 2 and 4, missing on key extreme poverty families. Because of this, we decided to take a different approach by introducing a two-step model consisting of 3 separate logistic models. The first model predicted whether a family was in poverty levels 1 or 2 ("low" level) or in poverty levels 3 or 4 ("high" level). The next two models make up the second step in the process, where they separate the low or high level classifications from the primary model, and make prediction assessments that further decompose each of those groups into 1 and 2 or 3 and 4, respectively. Specifics of each model will be expressed below.  
+
+This multi-step model is initialized with a logistic regression model, which predicts either high or low poverty levels. To reduce the amount of predictors from the initial 27, we ran a backwards stepwise regression on the full model; this resulted in a final model being fit with 16 features including `dis`, `hogar_total`, `dependency`, `overcrowding`, `qmobilephone`, `age`, `crowded_room`, `gender`, `area`, `edu_level`, `technology`, `prop_y12`, `male_prop`, `no_rent_flag`, `structure`, and `cook`.
+
+```{r}
+train$HL <- as.factor(ifelse(train$Target == 1 | train$Target == 2, "Low", "High"))
+
+vars3 <- c("HL", "rooms", "dis", "hogar_total", "dependency", "meanedu", "bedrooms", "overcrowding", "qmobilephone", "age", "crowded_room", "gender", "area", "edu_level", "school_flag", "technology", "prop_y12", "male_prop", "no_rent_flag", "structure", "toilet", "cook", "electric", "water", "floor_flag", "head_edu", "YearsBehindHouse", "techPerPerson")
+
+hlMod <- glm(HL ~., data = train[,which(names(train) %in% vars3)], family = binomial)  # Low is the "1"
+#summary(hlMod)
+
+hlStep <- step(hlMod, direction = "backward", trace = 0)
+```
+
+##### Low and High Models
+
+We further subsetted "low" level poverty classes by fitting another logistic regression model that would classify housholds into "extreme" or "moderate" poverty. When computing the predicted poverty levels, only families classified as "low" poverty level will be passed into this model. To reduce the amount of variables from the initial 27, we ran a backwards stepwise regression on the full model. The final model output contained 12 predictor variables including `rooms`, `dis`, `dependency`, `bedrooms`, `overcrowding`, `age`, `crowded_room`, `technology`, `techPerPerson`, `prop_y12`, `no_rent_flag`, and `cook`.
+
+Our third and final model constructed in this multi-step procedure performed a similar task, but instead classified households into "vulnerable" and "non-vulnerable". When computing the predicted poverty levels, only families classified as "high" poverty level will be passed into this model. As we did before, to reduce the amount of variables from the initial 27, we ran a backwards stepwise regression on the full model. Similarly, the final model output contained 12 predictor variables; however, we noticed a slight discrepancy in *which* 12 variables were returned. This trial of stepwise selection included `rooms`, `hogar_total`, `dependency`, `overcrowding`, `gender`, `school_flag`, `technology`, `prop_y12`, `male_prop`, `structure`, `cook`, and `head_edu`.
+
+```{r}
+# Lower level model
+train12 <- train[train$Target == 1 | train$Target == 2, which(names(train) %in% vars)]; train12$Target <- factor(train12$Target)
+lowMod <- glm(Target ~., data = train12, family = binomial) # build full model for "low"
+lmStep <- step(lowMod, direction = "backward", trace = 0) # stepwise to subset vars
+
+# Upper level model
+train34 <- train[train$Target == 3 | train$Target == 4, which(names(train) %in% vars)]; train34$Target <- factor(train34$Target)
+uppMod <- glm(Target ~., data = train34, family = binomial) # build full model on "high"
+uppStep <- step(uppMod, direction = "backward", trace = 0)
+```
+
+##### Monetary/Ethical Cost Tradeoff
+
+```{r}
+# set up cost matrices
+monetary <- matrix(rep(c(100,60,20,0), times = 4), ncol = 4)
+ethical <- matrix(c(0,40,80,100,0,0,40,60,0,0,0,20,0,0,0,0), ncol = 4)
+```
+
+When making our final predictions, there are three probability cutoff values to choose: one for the "high-low" model, one for the "low" level model, and one for the "high" level model. Again, we face the dilemma of model selection via cross-validated accuracies. In selecting a set of cutoff values that maximize accuracy, we find that families are more often classified into "non-vulnerable" households; logically, this makes sense because they make up the largest population in our sample. While this model would boast the highest accuracy, it would not be the most ethical, as we would not be providing aid to many families that are most in need.  
+
+To counteract this ethical dilemma, we instantiated a system that takes into account both the monetary and ethical costs for the program. The monetary cost was based on which group we classified that families into. For simplicity, we decided that those living in extreme poverty would be given \$100, moderate poverty would be given \$60, vulnerable households would be given \$20, and non-vulnerable would not receive aid. The ethical cost was based on the difference between the amount of money that the family *should* be receving and what they *actually* received. For example, if we classified a family that was acutally living in extreme poverty as living in a non-vulnerable household, the ethical cost would come out to \$100.  
+
+The baseline monetary cost that the program would pay for our validation set if *everyone* got the amount of aid they deserved would be \$13,850. When making our choices for the cutoff set, we took this figure into account. The final cutoff set we chose was 0.3, 0.6, and 0.65, which obtained an overall accuracy of 66.2%, and was better than the no-information rate of 65.11%, or predicting everyone as non-vulnerable, as they were the weighted majority. While this set of cutoff values did not score the *highest* overall accuracy, it effectively scored the highest Kappa coefficient while minimizing both the monetary and ethical costs. The monetary cost for this set of values was \$13,660, slightly below the actual cost; on the other hand, the ethical cost was only \$6,460. These cutoff values were the best choice when weighing the Kappa coefficient, monetary cost, and ethical cost.  
+
+```{r eval=FALSE}
+# Maybe???? but long time to run
+seq <- seq(0.05,0.95,0.05)
+bigcut <- data.frame(Cut1 = rep(seq, each = length(seq)^2),
+                     Cut2 = rep(seq, each = length(seq), times = length(seq)),
+                     Cut3 = rep(seq, times = length(seq)^2),
+                     Accuracy = rep(0, times = length(seq)^3))
+
+for (i in 1:nrow(bigcut)) {
+  row <- data.frame(Row = 1:nrow(cv), Pred1 = ifelse(hlPred > bigcut$Cut1[i], "Low", "High"), Actual = cv$Target)
+
+  row <- row %>%
+    mutate(Pred2 = ifelse(Pred1 == "Low", ifelse(predict(lowMod, cv[Row,], type = "response") > bigcut$Cut2[i], "2", "1"),
+                        ifelse(predict(uppMod, cv[Row,], type = "response") > bigcut$Cut3[i], "4", "3")))
+  rows
+  tab <- confusionMatrix(as.factor(row$Pred2), as.factor(row$Actual))$table
+  bigcut$Monetary[i] <- sum(tab * monetary)
+  bigcut$Ethical[i] <- sum(tab * ethical)
+  
+  bigcut$Accuracy[i] <- confusionMatrix(as.factor(row$Pred2), as.factor(row$Actual))$overall[1]
+  bigcut$Kappa[i] <- confusionMatrix(as.factor(row$Pred2), as.factor(row$Actual))$overall[2]
+}
+
+p <- ggplot(data = bigcut, aes(x = Monetary, y = Ethical, col = Kappa)) +
+  geom_point() +
+  scale_color_gradient(low = "white", high = "blue") +
+  geom_vline(xintercept = 12500) +
+  geom_vline(xintercept = 14500)
+ggplotly(p)
+
+q <- ggplot(data = bigcut[bigcut$Monetary > 12500 & bigcut$Monetary < 14500 & bigcut$Accuracy > 0.6511,], aes(x = Monetary, y = Ethical, col = Kappa)) +
+  geom_point() +
+  scale_color_gradient(low = "white", high = "blue")
+ggplotly(q)
+```
+
+```{r}
+# This function will predict the poverty levels for a bew dataset
+# Inputs: Data set
+# Outputs: A data frame with the row number and the final predition
+PredictPoverty <- function(data) {
+  hlPrediction <- predict(hlStep, newdata = data, type = "response")
+  rows <- data.frame(Row = 1:nrow(data), Pred1 = ifelse(hlPrediction > 0.3, "Low", "High"))
+
+  rows <- rows %>%
+    mutate(Pred2 = ifelse(Pred1 == "Low", ifelse(predict(lowMod, data[Row,], type = "response") > 0.6, "2", "1"),
+                          ifelse(predict(uppMod, data[Row,], type = "response") > 0.65, "4", "3")))
+  return(rows[,c("Row", "Pred2")])
+}
+
+#confusionMatrix(as.factor(PredictPoverty(cv)[,2]), as.factor(cv$Target))
+```
+
+In comparing final models selected from each procedure, we were left with a decision on which would be the most ideal to implement. By effectively minimizing the cost function and comparing some of the metrics we outlined in selecting our first model, we found Kappa to be the most deterministic when it came to unbalanced class comparisons. The final model found in our factor analysis method yielded a Kappa of 0.283, while the multi-step method yielded a Kappa of 0.3093; we favored this `r 100*round((.3093-.283)/.283, 3)`% increase in Kappa, and elected the model found by our multi-step procedure to be utilized as our overall final model that we would work with moving forward.  
+
+# Results Summary
+
+While we can simply predict the poverty levels of households, it is substantially more beneficial to understand *what* factors play a role in distinguishing levels of poverty. As follows from our mult-step modeling process, we can start by distinguishing separations of households classified into "low" level and "high" poverty levels. Significant factors leading to low poverty levels include the head of household having a disability, the house being more overcrowded, a higher dependency ratio, and the proportion of youth in the house. On the other hand, factors leading to "high" poverty levels (more wealthy households) include having more mobile phones overall technology, and higher education level attainment.  
+
+Distinguishing further between these groups, classifying between extreme and moderate poverty levels display similar results. Factors pointing to "extreme" levels include the head of household having a disability, the house being more crowded, higher proportions of youth in the house, and not having to pay rent. Conversely, we identified the most important factors signaling towards "moderate" levels of poverty to be households with more bedrooms and technology, and the head of household being older. Very similarly in making cuts between our "high" levels of poverty, factors leading toward "vulnerable" include a higher dependency ratio, more people living in the house, and a female as the head of the house. Those living more comfortably in non-vulnerable households tend to have more rooms in the house, a higher proportion of males, and *not* having any children behind in school. Although this served as a general summary for influential factors on household level classification, we provide a breakdown that outlines the multiplicative effect on the odds for groups in table 3 below.  
+
+
+**Table 3:** Multiplicative effect on the odds.
+
+Variable | "High-Low" Model | Extreme/Moderate Model | Vulnerable/Non-vulnerable Model
+---------|------------------|------------------------|--------------------------------
+`dis` | `r exp(coef(hlStep)[2])` | `r exp(coef(lmStep)[3])` | -
+`hogar_total` | `r exp(coef(hlStep)[3])` | - | `r exp(coef(uppStep)[3])`
+`dependency` | `r exp(coef(hlStep)[4])` | `r exp(coef(lmStep)[4])` | `r exp(coef(uppStep)[4])`
+`overcrowding` | `r exp(coef(hlStep)[5])` | `r exp(coef(lmStep)[6])` | `r exp(coef(uppStep)[5])`
+`qmobilephone` | `r exp(coef(hlStep)[6])` | - | -
+`age` | `r exp(coef(hlStep)[7])` | `r exp(coef(lmStep)[7])` | -
+`crowded_room` | `r exp(coef(hlStep)[8])` | `r exp(coef(lmStep)[8])` | -
+`gender` | `r exp(coef(hlStep)[9])` | - | `r exp(coef(uppStep)[6])`
+`area` | `r exp(coef(hlStep)[10])` | - | -
+`edu_level` | `r exp(coef(hlStep)[11])` | - | -
+`technology` | `r exp(coef(hlStep)[12])` | `r exp(coef(lmStep)[9])` | `r exp(coef(uppStep)[8])`
+`prop_y12` | `r exp(coef(hlStep)[13])` | `r exp(coef(lmStep)[11])` | `r exp(coef(uppStep)[9])`
+`male_prop` | `r exp(coef(hlStep)[14])` | - | `r exp(coef(uppStep)[10])`
+`no_rent_flag` | `r exp(coef(hlStep)[15])` | `r exp(coef(lmStep)[12])` | -
+`structure` | `r exp(coef(hlStep)[16])` | - | `r exp(coef(uppStep)[11])`
+`cook` | `r exp(coef(hlStep)[17])` | `r exp(coef(lmStep)[13])` | `r exp(coef(uppStep)[12])`
+`rooms` | - | `r exp(coef(lmStep)[2])` | `r exp(coef(uppStep)[2])`
+`bedrooms` | - | `r exp(coef(lmStep)[5])` | -
+`techPerPerson` | - | `r exp(coef(lmStep)[10])` | - 
+`school_flag` | - | - | `r exp(coef(uppStep)[7])`
+`head_edu` | - | - | `r exp(coef(uppStep)[13])`
+
+```{r eval=FALSE}
+# predicting on the test set
+
+test <- read.csv("poverty-test-blinded.csv")
+# Binary to factor
+test_fct <- decode(test, var_list)
+# Years behind in house
+test_fct <- test_fct %>%
+  group_by(idhogar) %>%
+  mutate(YearBehindHouse = sum(rez_esc, na.rm = T))
+
+test_mod <- test_fct %>%
+  inner_join(test_fct %>%
+               filter(fct_parentesco == 'parentesco1') %>%
+               select(idhogar, Target) %>%
+               group_by(idhogar), by = 'idhogar') %>%
+  # now do the feature engineering
+  mutate(
+    # recode a few variables
+    crowded_room = ifelse(hacapo == 1 | hacdor == 1, 1, 0),
+    gender = male,
+    # (under 19 + over 64) / (between 19 and 64)
+    dependency = ifelse(dependency == 'no', 0, ifelse(dependency == 'yes', 1, as.numeric(as.character(dependency)))),
+    num_tablets = ifelse(v18q == 0, 0, v18q1),
+    head_male_edu = ifelse(edjefe == 'no', 0, ifelse(edjefe == 'yes', 1, as.numeric(as.character(edjefe)))),
+    head_female_edu = ifelse(edjefa == 'no', 0, ifelse(edjefa == 'yes', 1, as.numeric(as.character(edjefa)))),
+    # area has 2 levels, so it can just be a flag
+    area = as.numeric(fct_area),
+    edu_level = as.numeric(fct_instlevel),
+    
+    # > 0 if more people than in the family are in the house
+    extra_people = tamviv - hhsize,
+    
+    # figure out how to deal with 'years behind in school'
+    rez_esc = ifelse(is.na(rez_esc) & (age < 7 | age > 19), 0, ifelse(!is.na(rez_esc), rez_esc, median(rez_esc))),
+    school_flag = as.numeric(is.na(rez_esc)),
+    
+    # combine tech
+    technology = num_tablets + computer + television + mobilephone,
+    techPerPerson = technology / hogar_total,
+    
+    # people counts/proportions
+    prop_y12 = (r4h1 + r4m1) / r4t3, # (males under 12 + females under 12) / (total ppl in house)
+    male_prop = r4h3 / r4t3, # (total males) / (total females)
+    
+    # missing rent payments
+    no_rent_flag = as.numeric(is.na(v2a1)),
+    rent = ifelse(is.na(v2a1) & fct_tipovivi == 'tipovivi1', 0, ifelse(!is.na(v2a1), v2a1, median(v2a1, na.rm = TRUE))),
+    
+    # convert to 'ordinal' variables
+    wall = as.numeric(fct_epared),
+    roof = as.numeric(fct_etecho),
+    floor = as.numeric(fct_eviv),
+    structure = wall + roof + floor, # general idea of house, max = 3
+    
+    # house conditions
+    toilet = ifelse(fct_sanitario == 'sanitario1' | fct_sanitario == "sanitario5", 0, 1),  # no toilet or outhouse
+    cook = ifelse(fct_energcocinar == 'energcocinar1' | fct_energcocinar == "energcocinar4", 0, 1), # none or wood/coal
+    #waste = ifelse(fct_elimbasu == 'elimbasu4', 0, 1),
+    electric = ifelse(noelec == 1, 0, 1),
+    water = ifelse(fct_abasta == 'abastaguano', 0, 1),
+    floor_flag = ifelse(fct_piso == 'pisonotiene' | fct_piso == "pisonatur", 0, 1),  # no floor or natural floor
+    condition_flag = toilet + cook + electric + water + floor_flag + cielorazo + refrig,
+    
+    head_edu = head_female_edu + head_male_edu,
+    
+    meaneduc = ifelse(is.na(meaneduc), median(meaneduc, na.rm = TRUE), meaneduc) # impute missings with avg
+    
+  ) %>%
+  select(-c(
+    edjefe, edjefa, # not useful (weird coding and duplicate responses)
+    v2a1, v18q, v18q1, rez_esc, # high number of missing values
+    agesq, tamviv, tamhog, hhsize, # duplicate house counts
+    escolari,
+    # remove some variables we used above
+    hacapo, hacdor,
+    male, female,
+    v18q, computer, television, mobilephone,
+    hogar_nin, hogar_adul, hogar_mayor,
+    fct_epared, fct_etecho, fct_eviv, fct_abasta, fct_area, fct_instlevel,
+    noelec, coopele, public, planpri, # electricity
+    wall, floor, roof, head_male_edu, head_female_edu,
+    refrig, v14a, cielorazo
+  )) %>%
+  select(-starts_with('r4')) %>%
+  select(-starts_with('SQB'))
+
+#testPred <- data.frame(Id = test_mod$Id,  PredictedPovertyLevel = PredictPoverty(test_mod)[,2])
+#testPred
+#write.csv(testPred, file = "povertyTestSetPredictions.csv", row.names = F)
+```
+
